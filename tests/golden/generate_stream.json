@@ -1,0 +1,6 @@
+[
+  {"model": "stub", "response": "hello", "done": false},
+  {"model": "stub", "response": " world", "done": false},
+  {"model": "stub", "response": "!", "done": false},
+  {"model": "stub", "response": "hello world!", "done": true}
+]
