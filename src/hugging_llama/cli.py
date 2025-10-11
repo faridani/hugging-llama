@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Awaitable, Dict, Iterable, Optional
 
 import httpx
 import uvicorn
@@ -96,6 +96,33 @@ async def command_show(url: str, model: str) -> None:
     print(json.dumps(info, indent=2))
 
 
+def _run_http_command(coro: Awaitable[Any], url: str) -> int:
+    try:
+        asyncio.run(coro)
+        return 0
+    except httpx.ConnectError:
+        print(
+            "Failed to connect to the hugging-llama server at"
+            f" {url}. Is it running? You can start it with 'hugging-llama serve'.",
+            file=sys.stderr,
+        )
+        return 1
+    except httpx.HTTPStatusError as exc:
+        response = exc.response
+        request = exc.request
+        detail = response.text.strip()
+        if detail:
+            message = f": {detail}"
+        else:
+            message = ""
+        print(
+            "Request to"
+            f" {request.method} {request.url} failed with status {response.status_code}{message}",
+            file=sys.stderr,
+        )
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Ollama compatible local runtime")
     parser.add_argument(
@@ -147,17 +174,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     url = args.url.rstrip("/")
     if args.command == "pull":
-        asyncio.run(stream_pull(url, args.model, args.revision, args.trust_remote_code))
-        return 0
+        return _run_http_command(stream_pull(url, args.model, args.revision, args.trust_remote_code), url)
     if args.command == "ps":
-        asyncio.run(command_ps(url))
-        return 0
+        return _run_http_command(command_ps(url), url)
     if args.command == "embed":
-        asyncio.run(command_embed(url, args.model, args.text))
-        return 0
+        return _run_http_command(command_embed(url, args.model, args.text), url)
     if args.command == "show":
-        asyncio.run(command_show(url, args.model))
-        return 0
+        return _run_http_command(command_show(url, args.model), url)
 
     parser.print_help()
     return 1
