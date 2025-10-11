@@ -30,6 +30,15 @@ Hugging Llama provides a fully local, Ollama-compatible runtime built on top of 
 
 ## Installation
 
+It is better to setup a conda environment before running this code 
+
+```bash
+conda create --name hugging-llama-env python=3.11
+conda activate hugging-llama-env
+
+```
+
+Then install the hugging-llama command with 
 ```bash
 pip install .
 ```
