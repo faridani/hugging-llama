@@ -1,7 +1,7 @@
 """Custom logits processors for presence and frequency penalties."""
 from __future__ import annotations
 
-from typing import Iterable, List, Sequence
+from collections.abc import Sequence
 
 import torch
 from transformers import LogitsProcessor
@@ -42,8 +42,8 @@ def build_logits_processors(
     prompt_lengths: Sequence[int],
     presence_penalty: float = 0.0,
     frequency_penalty: float = 0.0,
-) -> List[LogitsProcessor]:
-    processors: List[LogitsProcessor] = []
+) -> list[LogitsProcessor]:
+    processors: list[LogitsProcessor] = []
     if presence_penalty != 0 or frequency_penalty != 0:
         processors.append(
             PresenceFrequencyPenaltyProcessor(

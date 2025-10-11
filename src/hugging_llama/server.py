@@ -6,23 +6,22 @@ import json
 import logging
 import os
 import time
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
+from typing import Any
 
-import torch
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
-from pydantic import BaseModel
 from transformers import TextIteratorStreamer
 
 from .api_types import ChatRequest, EmbeddingsRequest, GenerateOptions, GenerateRequest, PullRequest
-from .model_manager import ManagedModel, ModelManager, run_generation
+from .model_manager import ModelManager, run_generation
 from .stop_sequences import StopSequenceMatcher
-from .utils import TimingInfo, detect_platform, now_utc, parse_keep_alive
+from .utils import TimingInfo, detect_platform, parse_keep_alive
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,9 +38,9 @@ OOM_COUNTER = Counter("ollama_oom_total", "Number of OOM occurrences")
 
 
 def create_app(
-    cache_dir: Optional[Path] = None,
+    cache_dir: Path | None = None,
     max_resident_models: int = 2,
-    default_ttl: Optional[float] = None,
+    default_ttl: float | None = None,
 ) -> FastAPI:
     cache_path = cache_dir or Path(os.environ.get("OLLAMA_SERVER_CACHE", "~/.cache/hugging-llama")).expanduser()
     manager = ModelManager(cache_path, max_resident_models=max_resident_models, default_ttl=default_ttl)
@@ -56,7 +55,10 @@ def create_app(
     )
 
     @app.middleware("http")
-    async def metrics_middleware(request: Request, call_next):  # type: ignore[override]
+    async def metrics_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         start = time.perf_counter()
         endpoint = request.url.path
         try:
@@ -70,7 +72,7 @@ def create_app(
         return manager
 
     @app.get("/health")
-    async def health() -> Dict[str, Any]:
+    async def health() -> dict[str, Any]:
         return {
             "status": "ok",
             "device": detect_platform(),
@@ -83,8 +85,8 @@ def create_app(
     async def _stream_generate(
         request: GenerateRequest,
         manager: ModelManager,
-        ttl: Optional[float],
-        format_validator,
+        ttl: float | None,
+        format_validator: Callable[[str], None] | None,
     ) -> AsyncGenerator[bytes, None]:
         if request.options is None:
             request_options = GenerateOptions()
@@ -120,7 +122,7 @@ def create_app(
             ),
         )
         accumulated = ""
-        generation_result: Dict[str, Any] = {}
+        generation_result: dict[str, Any] = {}
         async def _pull_next() -> str:
             def _next_token() -> str:
                 try:
@@ -171,7 +173,10 @@ def create_app(
             await manager.release(request.model, ttl)
 
     @app.post("/api/generate")
-    async def generate_endpoint(request: GenerateRequest, manager: ModelManager = Depends(get_manager)):
+    async def generate_endpoint(
+        request: GenerateRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
         ttl = parse_keep_alive(request.keep_alive)
         format_validator = build_format_validator(request.format)
         if not request.stream:
@@ -181,10 +186,16 @@ def create_app(
                 chunks.append(data)
             final = chunks[-1] if chunks else {"response": "", "done": True}
             return JSONResponse(final)
-        return StreamingResponse(_stream_generate(request, manager, ttl, format_validator), media_type="application/json")
+        return StreamingResponse(
+            _stream_generate(request, manager, ttl, format_validator),
+            media_type="application/json",
+        )
 
     @app.post("/api/chat")
-    async def chat_endpoint(request: ChatRequest, manager: ModelManager = Depends(get_manager)):
+    async def chat_endpoint(
+        request: ChatRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
         ttl = parse_keep_alive(request.keep_alive)
         format_validator = build_format_validator(request.format)
 
@@ -196,16 +207,21 @@ def create_app(
         tokenizer = model.tokenizer
         messages = []
         for message in request.messages:
-            entry: Dict[str, Any] = {"role": message.role, "content": message.content}
+            entry: dict[str, Any] = {"role": message.role, "content": message.content}
             if message.name:
                 entry["name"] = message.name
             if message.tool_call_id:
                 entry["tool_call_id"] = message.tool_call_id
             messages.append(entry)
-        template_kwargs: Dict[str, Any] = {}
+        template_kwargs: dict[str, Any] = {}
         if request.tools:
             template_kwargs["tools"] = [tool.model_dump() for tool in request.tools]
-        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, **template_kwargs)
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+            **template_kwargs,
+        )
         await manager.release(request.model, ttl)
 
         generate_request = GenerateRequest(
@@ -217,15 +233,15 @@ def create_app(
             format=request.format,
             options=request.options,
         )
-        async def translate_stream():
+        async def translate_stream() -> AsyncGenerator[bytes, None]:
             collected = ""
-            stored_tool_calls: Optional[List[Dict[str, Any]]] = None
+            stored_tool_calls: list[dict[str, Any]] | None = None
             async for chunk in _stream_generate(generate_request, manager, ttl, format_validator):
                 payload = json.loads(chunk.decode("utf-8"))
                 text = payload.get("response", "")
                 if text:
                     collected += text
-                message_content: Dict[str, Any] = {
+                message_content: dict[str, Any] = {
                     "role": "assistant",
                     "content": text,
                 }
@@ -242,17 +258,20 @@ def create_app(
                     "done": payload.get("done", False),
                 }
                 if payload.get("done"):
-                    message_chunk.update({k: v for k, v in payload.items() if k in {"total_duration", "eval_count", "prompt_eval_count"}})
+                    for key in ("total_duration", "eval_count", "prompt_eval_count"):
+                        if key in payload:
+                            message_chunk[key] = payload[key]
                 yield (json.dumps(message_chunk) + "\n").encode("utf-8")
         if not request.stream:
             data = []
             async for chunk in translate_stream():
                 data.append(json.loads(chunk.decode("utf-8")))
-            return JSONResponse(data[-1] if data else {"message": {"role": "assistant", "content": ""}, "done": True})
+            final_payload = data[-1] if data else {"message": {"role": "assistant", "content": ""}, "done": True}
+            return JSONResponse(final_payload)
         return StreamingResponse(translate_stream(), media_type="application/json")
 
     @app.get("/api/tags")
-    async def list_tags() -> Dict[str, Any]:
+    async def list_tags() -> dict[str, Any]:
         models = []
         for path in sorted(manager.cache_dir.glob("**/config.json")):
             stat = path.stat()
@@ -274,7 +293,9 @@ def create_app(
         return {"models": models}
 
     @app.get("/api/ps")
-    async def list_processes(manager: ModelManager = Depends(get_manager)):
+    async def list_processes(
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
         snapshot = await manager.list_loaded()
         models = []
         for name, info in snapshot.items():
@@ -289,8 +310,8 @@ def create_app(
         return {"models": models}
 
     @app.post("/api/pull")
-    async def pull_endpoint(request: PullRequest):
-        async def event_stream():
+    async def pull_endpoint(request: PullRequest) -> StreamingResponse:
+        async def event_stream() -> AsyncGenerator[bytes, None]:
             yield (json.dumps({"status": "pulling manifest", "digest": ""}) + "\n").encode("utf-8")
             path = await manager.pull(request.model, request.revision, request.trust_remote_code)
             yield (json.dumps({"status": "downloading", "path": str(path)}) + "\n").encode("utf-8")
@@ -298,17 +319,23 @@ def create_app(
         return StreamingResponse(event_stream(), media_type="application/json")
 
     @app.get("/api/models")
-    async def deprecated_models():
-        tags = await list_tags()
-        return tags
+    async def deprecated_models() -> dict[str, Any]:
+        return await list_tags()
 
     @app.post("/api/embed")
-    async def embed(request: EmbeddingsRequest, manager: ModelManager = Depends(get_manager)):
+    async def embed(
+        request: EmbeddingsRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
         ttl = parse_keep_alive(request.keep_alive)
         model = await manager.ensure_embeddings_model(request.model, ttl)
         inputs = request.input if isinstance(request.input, list) else [request.input]
         start = time.perf_counter()
-        vectors = await asyncio.get_running_loop().run_in_executor(None, model.model.encode, inputs)
+        vectors = await asyncio.get_running_loop().run_in_executor(
+            None,
+            model.model.encode,
+            inputs,
+        )
         duration = time.perf_counter() - start
         await manager.release(request.model, ttl)
         return {
@@ -332,7 +359,7 @@ def build_prompt(request: GenerateRequest) -> str:
     return request.prompt
 
 
-def format_generate_chunk(request: GenerateRequest, text: str, done: bool, timing: TimingInfo) -> Dict[str, Any]:
+def format_generate_chunk(request: GenerateRequest, text: str, done: bool, timing: TimingInfo) -> dict[str, Any]:
     payload = {
         "model": request.model,
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -344,7 +371,7 @@ def format_generate_chunk(request: GenerateRequest, text: str, done: bool, timin
     return payload
 
 
-def build_format_validator(format_option: Optional[Any]):
+def build_format_validator(format_option: Any | None) -> Callable[[str], None] | None:
     if format_option is None:
         return None
     if isinstance(format_option, str) and format_option.lower() == "json":
@@ -352,7 +379,7 @@ def build_format_validator(format_option: Optional[Any]):
             try:
                 json.loads(text)
             except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=400, detail=f"Model output is not valid JSON: {exc}")
+                raise HTTPException(status_code=400, detail=f"Model output is not valid JSON: {exc}") from exc
 
         return validator
     if isinstance(format_option, dict):
@@ -364,14 +391,14 @@ def build_format_validator(format_option: Optional[Any]):
             try:
                 data = json.loads(text)
             except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=400, detail=f"Model output is not valid JSON: {exc}")
+                raise HTTPException(status_code=400, detail=f"Model output is not valid JSON: {exc}") from exc
             jsonschema.validate(data, schema)
 
         return validator
     raise HTTPException(status_code=400, detail="Unsupported format option")
 
 
-def detect_tool_calls(text: str) -> Optional[List[Dict[str, Any]]]:
+def detect_tool_calls(text: str) -> list[dict[str, Any]] | None:
     if not text:
         return None
     try:

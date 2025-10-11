@@ -3,29 +3,26 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
-import math
-import os
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple, cast
+from typing import Any, Callable, cast
 
 import torch
-from accelerate import infer_auto_device_map
 from huggingface_hub import snapshot_download
 from transformers import (
     AutoModelForCausalLM,
-    AutoModelForSeq2SeqLM,
     AutoTokenizer,
     TextIteratorStreamer,
 )
 
 from .api_types import GenerateOptions
 from .logits import build_logits_processors
-from .stop_sequences import StopSequenceMatcher
-from .utils import AsyncLRU, choose_dtype, detect_default_device, parse_keep_alive
+from .utils import AsyncLRU, choose_dtype, detect_default_device
 
-MODEL_LOCKS: Dict[str, asyncio.Lock] = {}
+LOGGER = logging.getLogger(__name__)
+
+MODEL_LOCKS: dict[str, asyncio.Lock] = {}
 
 _SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE = (
     "trust_remote_code" in inspect.signature(snapshot_download).parameters
@@ -40,15 +37,15 @@ class ManagedModel:
     path: Path
     device: str
     dtype: torch.dtype
-    details: Dict[str, Any] = field(default_factory=dict)
-    keep_alive: Optional[float] = None
+    details: dict[str, Any] = field(default_factory=dict)
+    keep_alive: float | None = None
 
     def close(self) -> None:
         if hasattr(self.model, "cpu"):
             try:
                 self.model.cpu()
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - defensive safeguard
+                LOGGER.debug("Failed to move model to CPU during close: %s", exc)
 
 
 class ModelManager:
@@ -56,24 +53,24 @@ class ModelManager:
         self,
         cache_dir: Path,
         max_resident_models: int = 2,
-        default_ttl: Optional[float] = None,
+        default_ttl: float | None = None,
     ) -> None:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.models = AsyncLRU(max_items=max_resident_models)
         self.default_ttl = default_ttl
-        self.aliases: Dict[str, Dict[str, Any]] = {}
+        self.aliases: dict[str, dict[str, Any]] = {}
 
-    def _effective_ttl(self, ttl: Optional[float]) -> Optional[float]:
+    def _effective_ttl(self, ttl: float | None) -> float | None:
         return self.default_ttl if ttl is None else ttl
 
-    def resolve_model(self, name: str) -> Tuple[str, Dict[str, Any]]:
+    def resolve_model(self, name: str) -> tuple[str, dict[str, Any]]:
         info = self.aliases.get(name, {"model": name, "options": {}})
         model_name = info.get("model", name)
         options = info.get("options", {})
         return model_name, options
 
-    async def ensure_model(self, name: str, options: Optional[GenerateOptions], ttl: Optional[float]) -> ManagedModel:
+    async def ensure_model(self, name: str, options: GenerateOptions | None, ttl: float | None) -> ManagedModel:
         resolved_name, alias_options = self.resolve_model(name)
         merged_options = {}
         merged_options.update(alias_options or {})
@@ -95,8 +92,8 @@ class ModelManager:
         await self.models.increment(resolved_name)
         return entry.value
 
-    def _load_text_model(self, name: str, options: Dict[str, Any]) -> ManagedModel:
-        load_kwargs: Dict[str, Any] = {}
+    def _load_text_model(self, name: str, options: dict[str, Any]) -> ManagedModel:
+        load_kwargs: dict[str, Any] = {}
         device = detect_default_device()
         dtype = choose_dtype(device)
         if options.get("load_in_8bit"):
@@ -129,16 +126,16 @@ class ModelManager:
         )
         return managed
 
-    async def release(self, name: str, ttl: Optional[float]) -> None:
+    async def release(self, name: str, ttl: float | None) -> None:
         resolved_name, _ = self.resolve_model(name)
         await self.models.decrement(resolved_name)
         if ttl == 0:
             await self.models.update_ttl(resolved_name, 0)
             await self.models.evict_expired()
 
-    async def list_loaded(self) -> Dict[str, Dict[str, Any]]:
+    async def list_loaded(self) -> dict[str, dict[str, Any]]:
         snapshot = await self.models.snapshot()
-        result: Dict[str, Dict[str, Any]] = {}
+        result: dict[str, dict[str, Any]] = {}
         for key, entry in snapshot.items():
             model: ManagedModel = entry.value
             result[key] = {
@@ -153,7 +150,7 @@ class ModelManager:
         async with self.models._global_lock:  # noqa: SLF001
             await self.models._evict_key_locked(resolved_name)
 
-    async def pull(self, name: str, revision: Optional[str], trust_remote_code: bool) -> Path:
+    async def pull(self, name: str, revision: str | None, trust_remote_code: bool) -> Path:
         repo_dir = self.cache_dir / name.replace("/", "__")
         repo_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,7 +175,7 @@ class ModelManager:
 
         return await asyncio.get_running_loop().run_in_executor(None, _download)
 
-    async def ensure_embeddings_model(self, name: str, ttl: Optional[float]) -> ManagedModel:
+    async def ensure_embeddings_model(self, name: str, ttl: float | None) -> ManagedModel:
         resolved_name, _ = self.resolve_model(name)
         entry = await self.models.get(resolved_name)
         if entry is None:
@@ -224,9 +221,9 @@ def run_generation(
     model,
     prompt_text: str,
     streamer: TextIteratorStreamer,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     prompt_tokens = len(tokenizer(prompt_text, return_tensors="pt")["input_ids"][0])
-    generation_kwargs: Dict[str, Any] = {
+    generation_kwargs: dict[str, Any] = {
         "input_ids": input_ids.to(model.device),
         "streamer": streamer,
     }

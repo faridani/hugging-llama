@@ -7,7 +7,8 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Coroutine, Optional, Sequence
+from collections.abc import Coroutine, Sequence
+from typing import Any
 
 import httpx
 import uvicorn
@@ -47,8 +48,11 @@ DEFAULT_PORT = _resolve_default_port()
 DEFAULT_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 
 
-async def stream_pull(url: str, model: str, revision: Optional[str], trust_remote_code: bool) -> None:
-    async with httpx.AsyncClient(timeout=None) as client:
+STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=None, pool=None)
+
+
+async def stream_pull(url: str, model: str, revision: str | None, trust_remote_code: bool) -> None:
+    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         async with client.stream(
             "POST",
             f"{url}/api/pull",
@@ -65,7 +69,7 @@ async def stream_pull(url: str, model: str, revision: Optional[str], trust_remot
 
 
 async def command_ps(url: str) -> None:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         resp = await client.get(f"{url}/api/ps")
         resp.raise_for_status()
         data = resp.json()
@@ -76,7 +80,7 @@ async def command_ps(url: str) -> None:
 
 
 async def command_embed(url: str, model: str, text: str) -> None:
-    async with httpx.AsyncClient(timeout=None) as client:
+    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         resp = await client.post(f"{url}/api/embed", json={"model": model, "input": text})
         resp.raise_for_status()
         data = resp.json()
@@ -84,7 +88,7 @@ async def command_embed(url: str, model: str, text: str) -> None:
 
 
 async def command_show(url: str, model: str) -> None:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         resp = await client.get(f"{url}/api/tags")
         resp.raise_for_status()
         data = resp.json()
@@ -151,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     pull_parser.add_argument("--revision", default=None)
     pull_parser.add_argument("--trust-remote-code", action="store_true")
 
-    ps_parser = sub.add_parser("ps", help="List loaded models")
+    sub.add_parser("ps", help="List loaded models")
 
     embed_parser = sub.add_parser("embed", help="Request embeddings")
     embed_parser.add_argument("model")
@@ -163,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 

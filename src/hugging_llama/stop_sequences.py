@@ -1,19 +1,19 @@
 """Stop sequence utilities with boundary aware matching."""
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 
 class StopSequenceMatcher:
     """Incrementally detects stop sequences across chunk boundaries."""
 
-    def __init__(self, stops: Optional[Iterable[str]]) -> None:
-        self.stops: List[str] = [s for s in (stops or []) if s]
+    def __init__(self, stops: Iterable[str] | None) -> None:
+        self.stops: list[str] = [s for s in (stops or []) if s]
         self.max_stop = max((len(s) for s in self.stops), default=0)
         self.tail = ""
         self.finished = False
 
-    def push(self, chunk: str) -> Tuple[str, bool]:
+    def push(self, chunk: str) -> tuple[str, bool]:
         if self.finished:
             return "", True
         if not chunk:
