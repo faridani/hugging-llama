@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hugging-llama"
+version = "0.1.0"
+description = "Local Ollama compatible server built on Hugging Face transformers"
+authors = [{name = "OpenAI", email = "support@openai.com"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "accelerate",
+  "fastapi",
+  "httpx",
+  "jsonschema",
+  "prometheus-client",
+  "sentence-transformers",
+  "transformers",
+  "torch",
+  "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy",
+  "pre-commit",
+  "pytest",
+  "ruff",
+]
+
+[project.scripts]
+hugging-llama = "hugging_llama.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+select = ["E", "F", "I", "B", "UP", "S"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = false
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
