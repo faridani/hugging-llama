@@ -1,0 +1,40 @@
+# .github/workflows/python-typecheck.yml
+
+name: Mypy Type Check
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push events for the "main" branch
+  push:
+    branches: [ "main" ]
+  # Also triggers on pull requests targeting the "main" branch
+  pull_request:
+    branches: [ "main" ]
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  typecheck:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the repository code
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      # 2. Set up Python so mypy can run
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 3. Install the project with its development dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+
+      # 4. Run mypy against the source tree
+      - name: Run mypy
+        run: |
+          mypy src
