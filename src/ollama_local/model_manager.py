@@ -59,6 +59,9 @@ class ModelManager:
         self.default_ttl = default_ttl
         self.aliases: Dict[str, Dict[str, Any]] = {}
 
+    def _effective_ttl(self, ttl: Optional[float]) -> Optional[float]:
+        return self.default_ttl if ttl is None else ttl
+
     def resolve_model(self, name: str) -> Tuple[str, Dict[str, Any]]:
         info = self.aliases.get(name, {"model": name, "options": {}})
         model_name = info.get("model", name)
@@ -81,7 +84,7 @@ class ModelManager:
                         None,
                         lambda: self._load_text_model(resolved_name, merged_options),
                     )
-                    entry = await self.models.upsert(resolved_name, model, ttl or self.default_ttl)
+                    entry = await self.models.upsert(resolved_name, model, self._effective_ttl(ttl))
         if ttl is not None:
             await self.models.update_ttl(resolved_name, ttl)
         await self.models.increment(resolved_name)
@@ -171,7 +174,7 @@ class ModelManager:
                     managed = await asyncio.get_running_loop().run_in_executor(
                         None, lambda: self._load_embeddings_model(name)
                     )
-                    entry = await self.models.upsert(name, managed, ttl or self.default_ttl)
+                    entry = await self.models.upsert(name, managed, self._effective_ttl(ttl))
         if ttl is not None:
             await self.models.update_ttl(name, ttl)
         await self.models.increment(name)

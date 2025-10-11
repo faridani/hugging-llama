@@ -141,6 +141,10 @@ class AsyncLRU:
             await self._evict_key_locked(key)
 
     async def _evict_key_locked(self, key: str) -> None:
+        try:
+            self._lru.remove(key)
+        except ValueError:
+            pass
         entry = self._data.get(key)
         if not entry:
             return

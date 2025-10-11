@@ -84,6 +84,24 @@ def test_async_lru_ttl_expiration(monkeypatch: pytest.MonkeyPatch) -> None:
     asyncio.run(scenario())
 
 
+def test_async_lru_clears_lru_order_on_eviction(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> None:
+        cache = utils.AsyncLRU(max_items=1)
+        current_time = {"now": 1_000.0}
+
+        def fake_time() -> float:
+            return current_time["now"]
+
+        monkeypatch.setattr(utils.time, "time", fake_time)
+
+        await cache.upsert("key", "value", ttl=10.0)
+        current_time["now"] += 20.0
+        await cache.evict_expired()
+        assert list(cache._lru) == []  # noqa: SLF001
+
+    asyncio.run(scenario())
+
+
 def test_ref_count_guard_eviction() -> None:
     async def scenario() -> None:
         cache = utils.AsyncLRU(max_items=1)
