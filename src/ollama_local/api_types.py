@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Sequence, Union
 
-from pydantic import BaseModel, Field, root_validator, validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class GenerateOptions(BaseModel):
@@ -24,10 +24,10 @@ class GenerateOptions(BaseModel):
     dtype: Optional[str] = Field(default=None, pattern=r"^(auto|float16|bfloat16|float32)$")
     seed: Optional[int] = None
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
-    @validator("stop", pre=True)
+    @field_validator("stop", mode="before")
+    @classmethod
     def _normalise_stop(cls, value: Any) -> Optional[List[str]]:
         if value is None:
             return None
@@ -48,10 +48,12 @@ class GenerateRequest(BaseModel):
     format: Optional[Union[str, Dict[str, Any]]] = None
     options: Optional[GenerateOptions] = None
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def _coerce_options(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         options = values.get("options")
         if isinstance(options, dict):
+            values = dict(values)
             values["options"] = GenerateOptions(**options)
         return values
 
@@ -77,10 +79,12 @@ class ChatRequest(BaseModel):
     format: Optional[Union[str, Dict[str, Any]]] = None
     options: Optional[GenerateOptions] = None
 
-    @root_validator(pre=True)
+    @model_validator(mode="before")
+    @classmethod
     def _coerce_options(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         options = values.get("options")
         if isinstance(options, dict):
+            values = dict(values)
             values["options"] = GenerateOptions(**options)
         return values
 

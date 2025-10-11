@@ -70,7 +70,7 @@ class ModelManager:
         merged_options = {}
         merged_options.update(alias_options or {})
         if options:
-            merged_options.update(options.dict(exclude_none=True))
+            merged_options.update(options.model_dump(exclude_none=True))
         entry = await self.models.get(resolved_name)
         if entry is None:
             lock = MODEL_LOCKS.setdefault(resolved_name, asyncio.Lock())
