@@ -148,14 +148,18 @@ class ModelManager:
     async def pull(self, name: str, revision: Optional[str], trust_remote_code: bool) -> Path:
         repo_dir = self.cache_dir / name.replace("/", "__")
         repo_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_download(
-            name,
-            revision=revision,
-            local_dir=repo_dir,
-            local_dir_use_symlinks=False,
-            trust_remote_code=trust_remote_code,
-        )
-        return repo_dir
+
+        def _download() -> Path:
+            snapshot_download(
+                name,
+                revision=revision,
+                local_dir=repo_dir,
+                local_dir_use_symlinks=False,
+                trust_remote_code=trust_remote_code,
+            )
+            return repo_dir
+
+        return await asyncio.get_running_loop().run_in_executor(None, _download)
 
     async def ensure_embeddings_model(self, name: str, ttl: Optional[float]) -> ManagedModel:
         entry = await self.models.get(name)
