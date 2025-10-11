@@ -1,9 +1,11 @@
 import asyncio
 import time
 from pathlib import Path
+from typing import Any, Dict
 
 import pytest
 
+import hugging_llama.model_manager as model_manager_module
 from hugging_llama.api_types import GenerateOptions
 from hugging_llama.model_manager import ManagedModel, ModelManager
 
@@ -32,6 +34,33 @@ def test_ensure_model_respects_zero_ttl(monkeypatch: pytest.MonkeyPatch, tmp_pat
         await manager.release("foo", ttl=0)
         snapshot_after = await manager.models.snapshot()
         assert "foo" not in snapshot_after
+
+    asyncio.run(scenario())
+
+
+def test_pull_handles_missing_trust_remote_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = ModelManager(tmp_path, max_resident_models=1)
+
+        download_kwargs: Dict[str, Any] = {}
+
+        def fake_snapshot_download(name: str, **kwargs: Any) -> None:
+            download_kwargs.update(kwargs)
+            assert name == "some/model"
+
+        monkeypatch.setattr(
+            model_manager_module,
+            "_SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE",
+            False,
+            raising=False,
+        )
+        monkeypatch.setattr(model_manager_module, "snapshot_download", fake_snapshot_download)
+
+        path = await manager.pull("some/model", revision="main", trust_remote_code=True)
+        assert path == tmp_path / "some__model"
+        assert "trust_remote_code" not in download_kwargs
+        assert download_kwargs["revision"] == "main"
+        assert download_kwargs["local_dir"] == tmp_path / "some__model"
 
     asyncio.run(scenario())
 
