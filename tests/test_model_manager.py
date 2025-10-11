@@ -34,3 +34,37 @@ def test_ensure_model_respects_zero_ttl(monkeypatch: pytest.MonkeyPatch, tmp_pat
         assert "foo" not in snapshot_after
 
     asyncio.run(scenario())
+
+
+def test_embeddings_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = ModelManager(tmp_path, max_resident_models=1)
+        managed = ManagedModel(
+            model=object(),
+            tokenizer=None,
+            kind="embedding",
+            path=tmp_path,
+            device="cpu",
+            dtype="float32",
+        )
+
+        manager.aliases["alias"] = {"model": "actual", "options": {}}
+
+        def _load(self: ModelManager, name: str) -> ManagedModel:
+            assert name == "actual"
+            return managed
+
+        monkeypatch.setattr(ModelManager, "_load_embeddings_model", _load)
+
+        result = await manager.ensure_embeddings_model("alias", ttl=None)
+        assert result is managed
+
+        snapshot = await manager.models.snapshot()
+        assert "actual" in snapshot
+        assert snapshot["actual"].ref_count == 1
+
+        await manager.release("alias", ttl=None)
+        snapshot_after = await manager.models.snapshot()
+        assert snapshot_after["actual"].ref_count == 0
+
+    asyncio.run(scenario())

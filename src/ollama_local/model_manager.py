@@ -165,19 +165,20 @@ class ModelManager:
         return await asyncio.get_running_loop().run_in_executor(None, _download)
 
     async def ensure_embeddings_model(self, name: str, ttl: Optional[float]) -> ManagedModel:
-        entry = await self.models.get(name)
+        resolved_name, _ = self.resolve_model(name)
+        entry = await self.models.get(resolved_name)
         if entry is None:
-            lock = MODEL_LOCKS.setdefault(name, asyncio.Lock())
+            lock = MODEL_LOCKS.setdefault(resolved_name, asyncio.Lock())
             async with lock:
-                entry = await self.models.get(name)
+                entry = await self.models.get(resolved_name)
                 if entry is None:
                     managed = await asyncio.get_running_loop().run_in_executor(
-                        None, lambda: self._load_embeddings_model(name)
+                        None, lambda: self._load_embeddings_model(resolved_name)
                     )
-                    entry = await self.models.upsert(name, managed, self._effective_ttl(ttl))
+                    entry = await self.models.upsert(resolved_name, managed, self._effective_ttl(ttl))
         if ttl is not None:
-            await self.models.update_ttl(name, ttl)
-        await self.models.increment(name)
+            await self.models.update_ttl(resolved_name, ttl)
+        await self.models.increment(resolved_name)
         return entry.value
 
     def _load_embeddings_model(self, name: str) -> ManagedModel:
