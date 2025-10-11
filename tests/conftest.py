@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from queue import Queue
-from pathlib import Path
-from typing import Any, Dict, Iterable, List
 import sys
 import types
+from pathlib import Path
+from queue import Queue
+from typing import Any, Dict, Iterable, List
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC_PATH = ROOT / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
 
 fake_torch = types.ModuleType("torch")
