@@ -13,8 +13,6 @@ from typing import Any
 import httpx
 import uvicorn
 
-from .server import create_app
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -172,6 +170,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "serve":
+        from .server import create_app
+
         app = create_app(max_resident_models=args.max_resident_models, default_ttl=args.model_ttl)
         uvicorn.run(app, host=args.host, port=args.port)
         return 0
