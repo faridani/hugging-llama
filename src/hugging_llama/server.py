@@ -298,11 +298,21 @@ def create_app(
     ) -> dict[str, Any]:
         snapshot = await manager.list_loaded()
         models = []
+        now = time.time()
         for name, info in snapshot.items():
+            expires_at = info.get("expires_at")
+            expires_iso: str | None = None
+            expires_in: float | None = None
+            if isinstance(expires_at, int | float):
+                expires_in = max(0.0, expires_at - now)
+                expires_iso = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat().replace(
+                    "+00:00", "Z"
+                )
             models.append(
                 {
                     "name": name,
-                    "expires_at": info.get("expires_at"),
+                    "expires_at": expires_iso,
+                    "expires_in": expires_in,
                     "ref_count": info.get("ref_count"),
                     "details": info.get("details"),
                 }

@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 from collections.abc import Coroutine, Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -66,15 +67,50 @@ async def stream_pull(url: str, model: str, revision: str | None, trust_remote_c
                     print(f"{status}")
 
 
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "∞"
+    if seconds <= 0:
+        return "expired"
+    minutes, rem = divmod(int(seconds + 0.5), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02}m"
+    if minutes:
+        return f"{minutes}m{rem:02}s"
+    return f"{rem}s"
+
+
+def _normalize_expires(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, int | float):
+        dt = datetime.fromtimestamp(value, tz=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 async def command_ps(url: str) -> None:
     async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         resp = await client.get(f"{url}/api/ps")
         resp.raise_for_status()
         data = resp.json()
-        for model in data.get("models", []):
-            expires = model.get("expires_at")
-            ref = model.get("ref_count")
-            print(f"{model['name']}: refs={ref} expires={expires}")
+    models = data.get("models", [])
+    if not models:
+        print("No models are currently loaded.")
+        return
+
+    header = f"{'NAME':<40} {'REFS':>4} {'IDLE':>10} {'EXPIRES':>25}"
+    print(header)
+    print("-" * len(header))
+    for entry in sorted(models, key=lambda item: item.get("name", "")):
+        name = entry.get("name", "<unknown>")
+        refs = entry.get("ref_count", 0)
+        idle = _format_duration(entry.get("expires_in"))
+        expires = _normalize_expires(entry.get("expires_at"))
+        print(f"{name:<40} {refs:>4} {idle:>10} {expires:>25}")
 
 
 async def command_embed(url: str, model: str, text: str) -> None:
@@ -85,17 +121,46 @@ async def command_embed(url: str, model: str, text: str) -> None:
         print(json.dumps(data, indent=2))
 
 
+def _human_size(size: int | float | None) -> str:
+    if size is None:
+        return "unknown"
+    if size < 1024:
+        return f"{size:.0f} B"
+    units = ["KB", "MB", "GB", "TB"]
+    value = float(size)
+    for unit in units:
+        value /= 1024
+        if value < 1024:
+            return f"{value:.2f} {unit}"
+    return f"{value:.2f} PB"
+
+
 async def command_show(url: str, model: str) -> None:
     async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         resp = await client.get(f"{url}/api/tags")
         resp.raise_for_status()
         data = resp.json()
-    models = {item["name"]: item for item in data.get("models", [])}
+    models = {item.get("name"): item for item in data.get("models", [])}
     info = models.get(model)
+    if info is None and ":" in model:
+        base, _sep, _tag = model.partition(":")
+        info = models.get(base)
     if not info:
         print(f"Model {model} not found in local registry", file=sys.stderr)
         sys.exit(1)
-    print(json.dumps(info, indent=2))
+
+    details = info.get("details") or {}
+    print(f"Name: {info.get('name', model)}")
+    if info.get("modified_at"):
+        print(f"Modified: {info['modified_at']}")
+    if "size" in info:
+        print(f"Size: {_human_size(info['size'])}")
+    if info.get("digest"):
+        print(f"Digest: {info['digest']}")
+    if details:
+        print("Details:")
+        for key in sorted(details):
+            print(f"  {key}: {details[key]}")
 
 
 def _run_http_command(coro: Coroutine[Any, Any, Any], url: str) -> int:

@@ -47,7 +47,7 @@ def parse_keep_alive(value: Any | None) -> float | None:
         return None
     if value in {0, "0", "0s"}:
         return 0.0
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         if value < 0:
             return None
         return float(value)
