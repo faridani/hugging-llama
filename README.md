@@ -1,5 +1,9 @@
 # hugging-llama
+
 An Ollama-like AI Serving API for Hugging Face Models
+
+
+<img src="images/logo.png" alt="hugging llama logo" height="300">
 
 
 Hugging Llama provides a fully local, Ollama-compatible runtime built on top of Hugging Face `transformers`. It includes a FastAPI + Uvicorn server, an ergonomic CLI, Docker packaging, and comprehensive tests that cover streaming/non-streaming generation, chat, embeddings, model pulls, and concurrency safety.
