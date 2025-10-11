@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
-
 import math
+
 import pytest
 
 import hugging_llama.utils as utils
@@ -25,7 +24,7 @@ from hugging_llama.stop_sequences import StopSequenceMatcher
         ("infinite", math.inf),
     ],
 )
-def test_parse_keep_alive_variants(value: Optional[object], expected: Optional[float]) -> None:
+def test_parse_keep_alive_variants(value: object | None, expected: float | None) -> None:
     assert utils.parse_keep_alive(value) == expected
 
 

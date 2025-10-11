@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -42,7 +44,7 @@ def test_pull_handles_missing_trust_remote_code(monkeypatch: pytest.MonkeyPatch,
     async def scenario() -> None:
         manager = ModelManager(tmp_path, max_resident_models=1)
 
-        download_kwargs: Dict[str, Any] = {}
+        download_kwargs: dict[str, Any] = {}
 
         def fake_snapshot_download(name: str, **kwargs: Any) -> None:
             download_kwargs.update(kwargs)

@@ -2,17 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
-import os
 import platform
 import time
 from collections import deque
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Callable, Deque, Dict, Iterable, List, Optional, Sequence
+from datetime import datetime, timezone
+from typing import Any
 
 import torch
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,7 +32,7 @@ class TimingInfo:
     def load_duration(self) -> float:
         return 0.0
 
-    def as_dict(self) -> Dict[str, float]:
+    def as_dict(self) -> dict[str, float]:
         return {
             "total_duration": self.total_duration,
             "prompt_eval_count": self.prompt_tokens,
@@ -37,7 +40,7 @@ class TimingInfo:
         }
 
 
-def parse_keep_alive(value: Optional[Any]) -> Optional[float]:
+def parse_keep_alive(value: Any | None) -> float | None:
     """Convert Ollama style keep_alive values to seconds."""
 
     if value is None:
@@ -69,13 +72,13 @@ class AsyncLRU:
     class Entry:
         value: Any
         ref_count: int
-        expires_at: Optional[float]
+        expires_at: float | None
         lock: asyncio.Lock
 
     def __init__(self, max_items: int) -> None:
         self.max_items = max_items
-        self._data: Dict[str, AsyncLRU.Entry] = {}
-        self._lru: Deque[str] = deque()
+        self._data: dict[str, AsyncLRU.Entry] = {}
+        self._lru: deque[str] = deque()
         self._global_lock = asyncio.Lock()
 
     def _touch(self, key: str) -> None:
@@ -83,14 +86,14 @@ class AsyncLRU:
             self._lru.remove(key)
         self._lru.appendleft(key)
 
-    async def get(self, key: str) -> Optional[Entry]:
+    async def get(self, key: str) -> Entry | None:
         async with self._global_lock:
             entry = self._data.get(key)
             if entry:
                 self._touch(key)
             return entry
 
-    async def upsert(self, key: str, value: Any, ttl: Optional[float]) -> Entry:
+    async def upsert(self, key: str, value: Any, ttl: float | None) -> Entry:
         async with self._global_lock:
             entry = self._data.get(key)
             expires_at = None
@@ -121,7 +124,7 @@ class AsyncLRU:
             if entry.ref_count == 0 and entry.expires_at is not None and entry.expires_at < time.time():
                 await self._evict_key_locked(key)
 
-    async def update_ttl(self, key: str, ttl: Optional[float]) -> None:
+    async def update_ttl(self, key: str, ttl: float | None) -> None:
         async with self._global_lock:
             entry = self._data.get(key)
             if not entry:
@@ -154,18 +157,25 @@ class AsyncLRU:
         if hasattr(entry_value, "close"):
             try:
                 entry_value.close()
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - defensive safeguard
+                LOGGER.debug("Failed to close cached entry %s: %s", key, exc)
         del self._data[key]
 
     async def evict_expired(self) -> None:
         async with self._global_lock:
             now = time.time()
-            expired = [key for key, entry in self._data.items() if entry.ref_count == 0 and entry.expires_at is not None and entry.expires_at < now]
-            for key in expired:
+            expired_keys = []
+            for key, entry in self._data.items():
+                if entry.ref_count != 0:
+                    continue
+                if entry.expires_at is None:
+                    continue
+                if entry.expires_at < now:
+                    expired_keys.append(key)
+            for key in expired_keys:
                 await self._evict_key_locked(key)
 
-    async def snapshot(self) -> Dict[str, Entry]:
+    async def snapshot(self) -> dict[str, Entry]:
         async with self._global_lock:
             return dict(self._data)
 
@@ -199,7 +209,7 @@ def human_readable_bytes(num: float) -> str:
 
 
 @asynccontextmanager
-async def ref_count_guard(cache: AsyncLRU, key: str, ttl: Optional[float]) -> AsyncIterator[Any]:
+async def ref_count_guard(cache: AsyncLRU, key: str, ttl: float | None) -> AsyncGenerator[Any, None]:
     entry = await cache.get(key)
     if entry is None:
         raise KeyError(key)
@@ -218,7 +228,7 @@ class RollingCounter:
 
     def __init__(self, window: float = 60.0) -> None:
         self.window = window
-        self.events: Deque[float] = deque()
+        self.events: deque[float] = deque()
 
     def add(self) -> None:
         self.events.append(time.time())
