@@ -40,6 +40,10 @@ ollama-local serve --host 127.0.0.1 --port 11434 \
 
 The server binds to `127.0.0.1` by default. Use `--host 0.0.0.0` in Docker or trusted networks. TLS can be configured through Uvicorn settings.
 
+To change the default port without updating every command invocation, set the `OLLAMA_LOCAL_PORT`
+environment variable. The CLI picks up this value for both `serve` (as the default for
+`--port`) and for the default `--url` used by other subcommands.
+
 ## CLI Examples
 
 ```bash

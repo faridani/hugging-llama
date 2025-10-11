@@ -7,3 +7,9 @@
 - [ ] Expose health and readiness probes with structured metrics.
 - [ ] Provide pluggable authentication and rate limiting middleware.
 - [ ] Build UI for monitoring active sessions and throughput trends.
+
+## Port Configuration Instructions
+
+- Set `OLLAMA_LOCAL_PORT` to change the default API port used by the CLI. The `serve`
+  command will use it unless `--port` is explicitly supplied, and other subcommands
+  will target the matching URL.

@@ -4,8 +4,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
+import os
 import sys
-from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 import httpx
@@ -13,7 +14,37 @@ import uvicorn
 
 from .server import create_app
 
-DEFAULT_URL = "http://127.0.0.1:11434"
+LOGGER = logging.getLogger(__name__)
+
+
+def _resolve_default_port() -> int:
+    """Return the default serve port, honoring ``OLLAMA_LOCAL_PORT``."""
+
+    env_value = os.environ.get("OLLAMA_LOCAL_PORT")
+    if env_value is None:
+        return 11434
+
+    try:
+        port = int(env_value)
+    except ValueError:
+        LOGGER.warning(
+            "Invalid value for OLLAMA_LOCAL_PORT=%s; falling back to 11434.",
+            env_value,
+        )
+        return 11434
+
+    if not (0 < port < 65536):
+        LOGGER.warning(
+            "OLLAMA_LOCAL_PORT %s outside valid range 1-65535; falling back to 11434.",
+            port,
+        )
+        return 11434
+
+    return port
+
+
+DEFAULT_PORT = _resolve_default_port()
+DEFAULT_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 
 
 async def stream_pull(url: str, model: str, revision: Optional[str], trust_remote_code: bool) -> None:
@@ -67,12 +98,24 @@ async def command_show(url: str, model: str) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Ollama compatible local runtime")
-    parser.add_argument("--url", default=DEFAULT_URL, help="Server URL (for non-serve commands)")
+    parser.add_argument(
+        "--url",
+        default=DEFAULT_URL,
+        help=(
+            "Server URL (for non-serve commands). Defaults to http://127.0.0.1 with "
+            "the current port or the value of OLLAMA_LOCAL_PORT."
+        ),
+    )
     sub = parser.add_subparsers(dest="command")
 
     serve_parser = sub.add_parser("serve", help="Start the API server")
     serve_parser.add_argument("--host", default="127.0.0.1")
-    serve_parser.add_argument("--port", type=int, default=11434)
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="Port for the API server (overrides OLLAMA_LOCAL_PORT).",
+    )
     serve_parser.add_argument("--max-resident-models", type=int, default=2)
     serve_parser.add_argument("--model-ttl", type=float, default=None)
 
