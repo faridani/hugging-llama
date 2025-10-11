@@ -13,6 +13,10 @@ from typing import Any
 import httpx
 import uvicorn
 
+from ._openmp import ensure_openmp_compat
+
+ensure_openmp_compat()
+
 from .server import create_app
 
 LOGGER = logging.getLogger(__name__)
