@@ -27,6 +27,7 @@ dev = [
   "pre-commit",
   "pytest",
   "ruff",
+  "types-jsonschema",
 ]
 
 [project.scripts]
@@ -43,6 +44,17 @@ select = ["E", "F", "I", "B", "UP", "S"]
 python_version = "3.9"
 strict = false
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+  "accelerate",
+  "accelerate.*",
+  "torch",
+  "torch.*",
+  "transformers",
+  "transformers.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

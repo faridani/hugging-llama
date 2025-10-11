@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Awaitable, Dict, Iterable, Optional
+from typing import Any, Coroutine, Optional, Sequence
 
 import httpx
 import uvicorn
@@ -96,7 +96,7 @@ async def command_show(url: str, model: str) -> None:
     print(json.dumps(info, indent=2))
 
 
-def _run_http_command(coro: Awaitable[Any], url: str) -> int:
+def _run_http_command(coro: Coroutine[Any, Any, Any], url: str) -> int:
     try:
         asyncio.run(coro)
         return 0
@@ -163,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Iterable[str]] = None) -> int:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 

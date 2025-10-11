@@ -14,7 +14,7 @@ from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
 import torch
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel
 from transformers import TextIteratorStreamer
@@ -77,8 +77,8 @@ def create_app(
         }
 
     @app.get("/metrics")
-    async def metrics() -> StreamingResponse:
-        return StreamingResponse(generate_latest(), media_type="text/plain; version=0.0.4")
+    async def metrics() -> Response:
+        return Response(content=generate_latest(), media_type="text/plain; version=0.0.4")
 
     async def _stream_generate(
         request: GenerateRequest,

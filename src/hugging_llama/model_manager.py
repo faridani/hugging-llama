@@ -8,7 +8,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 import torch
 from accelerate import infer_auto_device_map
@@ -158,14 +158,22 @@ class ModelManager:
         repo_dir.mkdir(parents=True, exist_ok=True)
 
         def _download() -> Path:
-            download_kwargs = {
-                "revision": revision,
-                "local_dir": repo_dir,
-                "local_dir_use_symlinks": False,
-            }
+            download_fn = cast(Callable[..., Any], snapshot_download)
             if _SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE and trust_remote_code:
-                download_kwargs["trust_remote_code"] = True
-            snapshot_download(name, **download_kwargs)
+                download_fn(
+                    name,
+                    revision=revision,
+                    local_dir=repo_dir,
+                    local_dir_use_symlinks=False,
+                    trust_remote_code=True,
+                )
+            else:
+                download_fn(
+                    name,
+                    revision=revision,
+                    local_dir=repo_dir,
+                    local_dir_use_symlinks=False,
+                )
             return repo_dir
 
         return await asyncio.get_running_loop().run_in_executor(None, _download)
@@ -208,7 +216,7 @@ class ModelManager:
         await self.models.evict_expired()
 
 
-async def run_generation(
+def run_generation(
     manager: ModelManager,
     request_options: GenerateOptions,
     input_ids: torch.LongTensor,

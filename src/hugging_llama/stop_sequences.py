@@ -1,7 +1,7 @@
 """Stop sequence utilities with boundary aware matching."""
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 
 class StopSequenceMatcher:
@@ -13,7 +13,7 @@ class StopSequenceMatcher:
         self.tail = ""
         self.finished = False
 
-    def push(self, chunk: str) -> (str, bool):
+    def push(self, chunk: str) -> Tuple[str, bool]:
         if self.finished:
             return "", True
         if not chunk:
