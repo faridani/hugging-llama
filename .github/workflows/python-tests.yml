@@ -1,6 +1,6 @@
 # .github/workflows/python-tests.yml
 
-name: Python Package CI 3.9-3.13
+name: Python Package CI
 
 # Controls when the workflow will run
 on:
