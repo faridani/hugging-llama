@@ -7,8 +7,8 @@ An Ollama-like AI Serving API for Hugging Face Models
 Hugging Llama provides a fully local, Ollama-compatible runtime built on top of Hugging Face `transformers`. It includes a FastAPI + Uvicorn server, an ergonomic CLI, Docker packaging, and comprehensive tests that cover streaming/non-streaming generation, chat, embeddings, model pulls, and concurrency safety.
 
 [![Python Package CI](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml)
-[![Ruff Lint](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml)
-[![Mypy Type Check](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml)
+[![Python Lint](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml)
+[![Python Type Check](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml)
 [![Docker Build](https://github.com/faridani/hugging-llama/actions/workflows/docker-build.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/docker-build.yml)
 ## Features
 
