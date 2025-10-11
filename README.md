@@ -6,7 +6,7 @@ An Ollama-like AI Serving API for Hugging Face Models
 
 Hugging Llama provides a fully local, Ollama-compatible runtime built on top of Hugging Face `transformers`. It includes a FastAPI + Uvicorn server, an ergonomic CLI, Docker packaging, and comprehensive tests that cover streaming/non-streaming generation, chat, embeddings, model pulls, and concurrency safety.
 
-[![Python Package CI](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml/badge.svg)](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml)        [![Python Package CI](https://github.com/faridani/hugging-llama/actions/workflows/python-tests314.yml/badge.svg)](https://github.com/faridani/hugging-llama/actions/workflows/python-tests314.yml)
+[![Python Package CI](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml/badge.svg)](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml)        
 
 ## Features
 
