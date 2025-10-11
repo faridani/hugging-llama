@@ -14,6 +14,23 @@ import sys
 from pathlib import Path
 
 
+def _ensure_openmp_compat() -> None:
+    """Allow environments with conflicting OpenMP runtimes to run.
+
+    Some optional dependencies (notably PyTorch) ship their own OpenMP
+    implementation.  When those wheels are combined with the system runtime the
+    interpreter aborts during import with ``OMP: Error #15``.  The upstream
+    recommendation is to make sure only a single runtime is loaded, but that is
+    not always feasible for end users executing the CLI.  The most reliable
+    mitigation is to set ``KMP_DUPLICATE_LIB_OK`` before any of the affected
+    libraries are imported.  ``sitecustomize`` runs early in interpreter start-up,
+    giving us a central place to apply the workaround so commands like
+    ``hugging-llama ps`` continue working out of the box.
+    """
+
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+
 def _ensure_src_on_path() -> None:
     """Insert the repository ``src`` directory at the front of ``sys.path``.
 
@@ -37,5 +54,6 @@ def _ensure_src_on_path() -> None:
             sys.path.insert(0, src_path)
 
 
+_ensure_openmp_compat()
 _ensure_src_on_path()
 
