@@ -7,9 +7,9 @@ import pytest
 
 
 def reload_cli_module():
-    """Reload ``ollama_local.cli`` after environment tweaks."""
+    """Reload ``hugging_llama.cli`` after environment tweaks."""
 
-    import ollama_local.cli as cli
+    import hugging_llama.cli as cli
 
     return importlib.reload(cli)
 

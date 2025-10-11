@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from ollama_local.api_types import GenerateOptions
-from ollama_local.model_manager import ManagedModel, ModelManager
+from hugging_llama.api_types import GenerateOptions
+from hugging_llama.model_manager import ManagedModel, ModelManager
 
 
 def test_ensure_model_respects_zero_ttl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

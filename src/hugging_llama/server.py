@@ -43,7 +43,7 @@ def create_app(
     max_resident_models: int = 2,
     default_ttl: Optional[float] = None,
 ) -> FastAPI:
-    cache_path = cache_dir or Path(os.environ.get("OLLAMA_SERVER_CACHE", "~/.cache/ollama-local")).expanduser()
+    cache_path = cache_dir or Path(os.environ.get("OLLAMA_SERVER_CACHE", "~/.cache/hugging-llama")).expanduser()
     manager = ModelManager(cache_path, max_resident_models=max_resident_models, default_ttl=default_ttl)
     app = FastAPI()
 

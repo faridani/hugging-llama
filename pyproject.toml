@@ -3,7 +3,7 @@ requires = ["setuptools>=67", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ollama-local"
+name = "hugging-llama"
 version = "0.1.0"
 description = "Local Ollama compatible server built on Hugging Face transformers"
 authors = [{name = "OpenAI", email = "support@openai.com"}]
@@ -30,7 +30,7 @@ dev = [
 ]
 
 [project.scripts]
-ollama-local = "ollama_local.cli:main"
+hugging-llama = "hugging_llama.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

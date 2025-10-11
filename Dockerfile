@@ -12,4 +12,4 @@ RUN pip install .[dev]
 
 EXPOSE 11434
 
-CMD ["ollama-local", "serve", "--host", "0.0.0.0", "--port", "11434"]
+CMD ["hugging-llama", "serve", "--host", "0.0.0.0", "--port", "11434"]

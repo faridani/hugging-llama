@@ -79,7 +79,7 @@ sys.modules.setdefault("huggingface_hub", fake_huggingface)
 import pytest
 from fastapi.testclient import TestClient
 
-from ollama_local.server import create_app
+from hugging_llama.server import create_app
 
 
 class FakeTensor:
@@ -192,9 +192,9 @@ def dummy_manager() -> DummyManager:
 
 @pytest.fixture(autouse=True)
 def patch_components(monkeypatch: pytest.MonkeyPatch, dummy_manager: DummyManager) -> None:
-    monkeypatch.setattr("ollama_local.server.TextIteratorStreamer", FakeStreamer)
-    monkeypatch.setattr("ollama_local.server.run_generation", fake_run_generation)
-    monkeypatch.setattr("ollama_local.server.ModelManager", lambda *args, **kwargs: dummy_manager)
+    monkeypatch.setattr("hugging_llama.server.TextIteratorStreamer", FakeStreamer)
+    monkeypatch.setattr("hugging_llama.server.run_generation", fake_run_generation)
+    monkeypatch.setattr("hugging_llama.server.ModelManager", lambda *args, **kwargs: dummy_manager)
 
 
 @pytest.fixture()

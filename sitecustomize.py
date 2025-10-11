@@ -1,7 +1,7 @@
 """Test helper to ensure local package import works.
 
 This project keeps its source code inside the ``src`` directory, which means
-Python needs that directory on ``sys.path`` to import the ``ollama_local``
+Python needs that directory on ``sys.path`` to import the ``hugging_llama``
 package without an editable install.  The test environment imports the module
 directly, so we insert the directory at interpreter start-up by providing a
 ``sitecustomize`` module.

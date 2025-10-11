@@ -6,8 +6,8 @@ from typing import Optional
 import math
 import pytest
 
-import ollama_local.utils as utils
-from ollama_local.stop_sequences import StopSequenceMatcher
+import hugging_llama.utils as utils
+from hugging_llama.stop_sequences import StopSequenceMatcher
 
 
 @pytest.mark.parametrize(
