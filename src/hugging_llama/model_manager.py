@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import math
 import os
@@ -25,6 +26,10 @@ from .stop_sequences import StopSequenceMatcher
 from .utils import AsyncLRU, choose_dtype, detect_default_device, parse_keep_alive
 
 MODEL_LOCKS: Dict[str, asyncio.Lock] = {}
+
+_SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE = (
+    "trust_remote_code" in inspect.signature(snapshot_download).parameters
+)
 
 
 @dataclass
@@ -153,13 +158,14 @@ class ModelManager:
         repo_dir.mkdir(parents=True, exist_ok=True)
 
         def _download() -> Path:
-            snapshot_download(
-                name,
-                revision=revision,
-                local_dir=repo_dir,
-                local_dir_use_symlinks=False,
-                trust_remote_code=trust_remote_code,
-            )
+            download_kwargs = {
+                "revision": revision,
+                "local_dir": repo_dir,
+                "local_dir_use_symlinks": False,
+            }
+            if _SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE and trust_remote_code:
+                download_kwargs["trust_remote_code"] = True
+            snapshot_download(name, **download_kwargs)
             return repo_dir
 
         return await asyncio.get_running_loop().run_in_executor(None, _download)
