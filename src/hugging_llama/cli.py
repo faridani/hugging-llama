@@ -13,6 +13,8 @@ from typing import Any
 import httpx
 import uvicorn
 
+from .model_catalog import MODEL_CATALOG, CatalogEntry
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -47,6 +49,141 @@ DEFAULT_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 
 
 STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=None, pool=None)
+
+
+def _detect_gpu_memory_bytes() -> int | None:
+    """Return the largest detected GPU memory in bytes or ``None`` if unknown."""
+
+    try:
+        import torch
+    except Exception:  # pragma: no cover - torch import failures are environment specific
+        return None
+
+    if not torch.cuda.is_available():
+        return None
+
+    try:
+        device_count = torch.cuda.device_count()
+    except Exception:  # pragma: no cover - defensive guard around device discovery
+        return None
+
+    total_memory = 0
+    for idx in range(device_count):
+        try:
+            props = torch.cuda.get_device_properties(idx)
+        except Exception:  # pragma: no cover - continue if a device query fails
+            continue
+        total_memory = max(total_memory, int(getattr(props, "total_memory", 0)))
+    return total_memory or None
+
+
+def _parse_memory_spec(value: str) -> float:
+    """Parse a memory specification (e.g. ``"24GB"``) into GiB."""
+
+    cleaned = value.strip().lower()
+    multiplier = 1.0
+    suffixes = {
+        "gb": 1.0,
+        "g": 1.0,
+        "gi": 1.0,
+        "gib": 1.0,
+        "mb": 1 / 1024,
+        "m": 1 / 1024,
+        "mi": 1 / 1024,
+        "mib": 1 / 1024,
+        "tb": 1024.0,
+        "t": 1024.0,
+        "ti": 1024.0,
+        "tib": 1024.0,
+    }
+    for suffix, factor in suffixes.items():
+        if cleaned.endswith(suffix):
+            multiplier = factor
+            cleaned = cleaned[: -len(suffix)]
+            break
+    if not cleaned:
+        raise ValueError("memory value is empty")
+    try:
+        amount = float(cleaned)
+    except ValueError as exc:
+        raise ValueError("memory value must be a number") from exc
+    if amount <= 0:
+        raise ValueError("memory value must be positive")
+    return amount * multiplier
+
+
+def _format_catalog_table(entries: list[CatalogEntry]) -> str:
+    """Return a formatted table for the supplied catalog entries."""
+
+    if not entries:
+        return ""
+
+    name_width = max(len("MODEL"), *(len(entry.name) for entry in entries))
+    params_width = max(len("PARAMS"), *(len(entry.parameters) for entry in entries))
+    precision_width = max(len("PRECISION"), *(len(entry.precision) for entry in entries))
+    vram_strings = [f"{entry.size_gb:.1f} GB" for entry in entries]
+    vram_width = max(len("VRAM"), *(len(value) for value in vram_strings))
+
+    header = (
+        f"{'MODEL':{name_width}}  "
+        f"{'PARAMS':>{params_width}}  "
+        f"{'VRAM':>{vram_width}}  "
+        f"{'PRECISION':>{precision_width}}  DESCRIPTION"
+    )
+    lines = [header]
+    lines.append(
+        f"{'-' * name_width}  "
+        f"{'-' * params_width}  "
+        f"{'-' * vram_width}  "
+        f"{'-' * precision_width}  {'-' * len('DESCRIPTION')}"
+    )
+    for entry, vram in zip(entries, vram_strings, strict=True):
+        lines.append(
+            f"{entry.name:{name_width}}  "
+            f"{entry.parameters:>{params_width}}  "
+            f"{vram:>{vram_width}}  "
+            f"{entry.precision:>{precision_width}}  {entry.description}"
+        )
+    return "\n".join(lines)
+
+
+def command_catalog(memory_spec: str | None, show_all: bool) -> int:
+    """Print models that fit within the detected or provided GPU memory."""
+
+    try:
+        provided_memory = _parse_memory_spec(memory_spec) if memory_spec else None
+    except ValueError as exc:
+        print(f"Invalid memory specification '{memory_spec}': {exc}", file=sys.stderr)
+        return 1
+
+    detected_gib: float | None = None
+    if provided_memory is None and not show_all:
+        detected_bytes = _detect_gpu_memory_bytes()
+        if detected_bytes is not None:
+            detected_gib = detected_bytes / (1024**3)
+            print(f"Detected approximately {detected_gib:.1f} GB of GPU memory.")
+        else:
+            print(
+                "Could not detect GPU memory automatically. Showing the full catalog.\n"
+                "Use --memory to filter by a specific amount.",
+            )
+
+    sorted_catalog = sorted(MODEL_CATALOG, key=lambda entry: entry.size_gb)
+    if show_all:
+        filtered_entries = list(sorted_catalog)
+    else:
+        limit = provided_memory if provided_memory is not None else detected_gib
+        if limit is None:
+            filtered_entries = list(sorted_catalog)
+        else:
+            filtered_entries = [entry for entry in sorted_catalog if entry.size_gb <= limit + 1e-9]
+
+    if not filtered_entries:
+        print("No models match the requested memory constraints.")
+        return 0
+
+    print(_format_catalog_table(filtered_entries))
+    return 0
 
 
 async def stream_pull(url: str, model: str, revision: str | None, trust_remote_code: bool) -> None:
@@ -162,6 +299,21 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser = sub.add_parser("show", help="Show effective configuration for a model")
     show_parser.add_argument("model")
 
+    catalog_parser = sub.add_parser(
+        "catalog",
+        help="List available models that fit in the current GPU memory",
+    )
+    catalog_parser.add_argument(
+        "--memory",
+        metavar="SIZE",
+        help="Override detected GPU memory (for example '24GB' or '24576MB').",
+    )
+    catalog_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Show the complete catalog regardless of GPU memory.",
+    )
+
     return parser
 
 
@@ -185,6 +337,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_http_command(command_embed(url, args.model, args.text), url)
     if args.command == "show":
         return _run_http_command(command_show(url, args.model), url)
+    if args.command == "catalog":
+        return command_catalog(args.memory, args.all)
 
     parser.print_help()
     return 1

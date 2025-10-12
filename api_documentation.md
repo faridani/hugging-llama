@@ -228,6 +228,18 @@ Install the package (`pip install .`) to expose the `hugging-llama` CLI. All com
   ```
   Exits with a non-zero status if the model is not present locally.
 
+### `hugging-llama catalog`
+
+- **Description:** Prints a curated list of models with estimated VRAM requirements filtered by the detected GPU or a supplied limit.
+- **Key Options:**
+  - `--memory`: Override the detected GPU memory (for example, `--memory 24GB`).
+  - `--all`: Bypass detection/overrides and display the entire catalog.
+- **Example Use Case:**
+  ```bash
+  hugging-llama catalog --memory 24GB
+  # Outputs a table of models whose VRAM estimates are <= 24GB
+  ```
+
 ## Environment Variables
 
 - **`OLLAMA_LOCAL_PORT`** — When set, both the server (`serve`) and client subcommands use this as the default port, simplifying configuration across multiple commands.
