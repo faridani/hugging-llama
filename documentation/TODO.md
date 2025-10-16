@@ -1,5 +1,9 @@
 # TODO
 
+# P0
+- [ ] hugging-llama catalog --memory 24GB does not pull all of the models  
+
+# P2
 - [ ] Add analytics pipeline for request tracking and latency dashboards.
 - [ ] Implement improved parallel serving to maximize hardware utilization across models.
 - [ ] Support model warm pools and configurable eviction strategies.
