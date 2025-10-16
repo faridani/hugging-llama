@@ -145,14 +145,14 @@ class ModelManager:
         aliases: dict[str, str] = dict(self.predefined_prompt_aliases)
         alias_info = self.aliases.get(name)
         if alias_info:
-            metadata = alias_info.get("metadata") or {}
-            aliases.update(metadata.get("prompt_aliases", {}))
             base_model = alias_info.get("model")
             if isinstance(base_model, str) and base_model and base_model != name:
                 base_alias = self.aliases.get(base_model)
                 if base_alias:
                     base_metadata = base_alias.get("metadata") or {}
                     aliases.update(base_metadata.get("prompt_aliases", {}))
+            metadata = alias_info.get("metadata") or {}
+            aliases.update(metadata.get("prompt_aliases", {}))
         return aliases
 
     def create_alias(
