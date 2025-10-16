@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from functools import partial
 from importlib.metadata import PackageNotFoundError, version
@@ -27,6 +27,7 @@ from .api_types import (
     CopyRequest,
     CreateRequest,
     DeleteRequest,
+    EditRequest,
     EmbeddingsRequest,
     GenerateOptions,
     GenerateRequest,
@@ -35,7 +36,9 @@ from .api_types import (
     ShowRequest,
     UnloadRequest,
 )
+from .metadata_utils import PROMPT_ALIAS_PREFIXES, MetadataError, merge_metadata, validate_metadata
 from .model_manager import ModelManager, run_generation
+from .modelfile import ModelfileError, parse_modelfile, validate_modelfile_data
 from .stop_sequences import StopSequenceMatcher
 from .utils import TimingInfo, detect_platform, parse_keep_alive
 
@@ -56,66 +59,6 @@ try:
     PACKAGE_VERSION = version("hugging-llama")
 except PackageNotFoundError:
     PACKAGE_VERSION = "0.0.0"
-
-
-def _strip_wrapping_quotes(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
-    return value
-
-
-def _consume_block(initial: str, iterator: Iterator[str], delimiter: str) -> str:
-    parts: list[str] = []
-    remainder = initial
-    if remainder:
-        parts.append(remainder)
-    for line in iterator:
-        if delimiter in line:
-            idx = line.find(delimiter)
-            parts.append(line[:idx])
-            trailing = line[idx + len(delimiter) :]
-            if trailing:
-                parts.append(trailing)
-            break
-        parts.append(line)
-    return "\n".join(parts).strip("\n")
-
-
-def _parse_block_value(value: str, iterator: Iterator[str]) -> str:
-    stripped = value.lstrip()
-    if stripped.startswith('"""') or stripped.startswith("'''"):
-        delimiter = stripped[:3]
-        remainder = stripped[3:]
-        if remainder.endswith(delimiter):
-            return remainder[: -len(delimiter)]
-        return _consume_block(remainder, iterator, delimiter)
-    return _strip_wrapping_quotes(stripped.strip())
-
-
-def parse_modelfile(text: str) -> dict[str, Any]:
-    result: dict[str, Any] = {"model": None, "template": None, "system": None, "parameters": {}}
-    if not text:
-        return result
-    iterator = iter(text.splitlines())
-    for raw_line in iterator:
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parts = stripped.split(maxsplit=1)
-        keyword = parts[0].upper()
-        remainder = parts[1] if len(parts) > 1 else ""
-        if keyword == "FROM":
-            result["model"] = remainder.strip()
-        elif keyword == "TEMPLATE":
-            result["template"] = _parse_block_value(remainder, iterator)
-        elif keyword == "SYSTEM":
-            result["system"] = _parse_block_value(remainder, iterator)
-        elif keyword == "PARAMETER":
-            param_parts = remainder.split(maxsplit=1)
-            if len(param_parts) == 2:
-                key = param_parts[0]
-                result["parameters"][key] = _strip_wrapping_quotes(param_parts[1].strip())
-    return result
 
 
 def create_app(
@@ -447,14 +390,40 @@ def create_app(
     async def deprecated_models() -> dict[str, Any]:
         return await list_tags()
 
-    @app.post("/api/embed")
-    async def embed(
+    async def _handle_embeddings(
         request: EmbeddingsRequest,
         manager: ModelManager = Depends(get_manager),  # noqa: B008
     ) -> dict[str, Any]:
         ttl = parse_keep_alive(request.keep_alive)
+        alias_map = manager.get_prompt_aliases(request.model)
+        inputs: list[str] = []
+
+        def _extract_alias(token: str) -> str | None:
+            stripped = token.strip()
+            lowered = stripped.lower()
+            for prefix in PROMPT_ALIAS_PREFIXES:
+                if lowered.startswith(f"{prefix}:"):
+                    candidate = stripped[len(prefix) + 1 :].strip().strip('"')
+                    return candidate
+            if stripped in alias_map:
+                return stripped
+            return None
+
+        for item in request.normalized_inputs:
+            alias_name = _extract_alias(item)
+            if alias_name is None:
+                inputs.append(item)
+                continue
+            if alias_name not in alias_map:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown prompt alias '{alias_name}' for model '{request.model}'",
+                )
+            resolved = alias_map[alias_name]
+            LOGGER.info("Resolved embedding prompt alias '%s' for model '%s'", alias_name, request.model)
+            inputs.append(resolved)
+
         model = await manager.ensure_embeddings_model(request.model, ttl)
-        inputs = request.input if isinstance(request.input, list) else [request.input]
         start = time.perf_counter()
         vectors = await asyncio.get_running_loop().run_in_executor(
             None,
@@ -469,12 +438,33 @@ def create_app(
             "total_duration": duration,
         }
 
+    @app.post("/api/embed")
+    async def embed(
+        request: EmbeddingsRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
+        return await _handle_embeddings(request, manager)
+
+    @app.post("/api/embeddings")
+    async def embeddings(
+        request: EmbeddingsRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
+        return await _handle_embeddings(request, manager)
+
     @app.post("/api/create")
     async def create_model(
         request: CreateRequest,
         manager: ModelManager = Depends(get_manager),  # noqa: B008
     ) -> Response:
-        parsed_modelfile = parse_modelfile(request.modelfile or "") if request.modelfile else {"parameters": {}}
+        parsed_modelfile = (
+            parse_modelfile(request.modelfile or "") if request.modelfile else {"parameters": {}}
+        )
+        if request.modelfile:
+            try:
+                validate_modelfile_data(parsed_modelfile)
+            except ModelfileError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         base_model = request.from_ or parsed_modelfile.get("model") or request.model
         parameters = request.parameters or parsed_modelfile.get("parameters") or {}
         template = request.template or parsed_modelfile.get("template")
@@ -484,21 +474,39 @@ def create_app(
             license_data: list[str] | str | None = [license_info]
         else:
             license_data = license_info
-        manager.create_alias(
-            request.model,
-            base_model,
-            template,
-            system_prompt,
-            parameters,
-            request.modelfile,
-            license_data,
-            request.messages,
-            {
-                "files": request.files,
-                "adapters": request.adapters,
-                "quantize": request.quantize,
-            },
-        )
+        metadata_defaults = {
+            "model": base_model or request.model,
+            "parameters": parameters,
+        }
+        metadata_from_modelfile = merge_metadata(parsed_modelfile.get("metadata"), metadata_defaults)
+        merged_metadata = merge_metadata(request.metadata, metadata_from_modelfile)
+        merged_metadata["model"] = base_model or request.model
+        merged_metadata["parameters"] = dict(sorted((parameters or {}).items()))
+        try:
+            validate_metadata(merged_metadata)
+        except MetadataError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            manager.create_alias(
+                request.model,
+                base_model,
+                template,
+                system_prompt,
+                parameters,
+                request.modelfile,
+                license_data,
+                request.messages,
+                merge_metadata(
+                    {
+                        "files": request.files,
+                        "adapters": request.adapters,
+                        "quantize": request.quantize,
+                    },
+                    merged_metadata,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         async def stream_events() -> AsyncGenerator[bytes, None]:
             yield (json.dumps({"status": "creating model", "model": request.model}) + "\n").encode("utf-8")
@@ -519,6 +527,69 @@ def create_app(
         if info is None:
             raise HTTPException(status_code=404, detail="Model not found")
         return info
+
+    @app.post("/api/edit")
+    async def edit_model(
+        request: EditRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
+        alias = manager.get_alias(request.model)
+        if alias is None:
+            raise HTTPException(status_code=404, detail="Model not found")
+
+        parsed_modelfile = (
+            parse_modelfile(request.modelfile or alias.get("modelfile") or "")
+            if request.modelfile or alias.get("modelfile")
+            else {"parameters": {}}
+        )
+        if request.modelfile:
+            try:
+                validate_modelfile_data(parsed_modelfile)
+            except ModelfileError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        parameters = (
+            request.parameters
+            or parsed_modelfile.get("parameters")
+            or alias.get("options")
+            or {}
+        )
+        template = request.template if request.template is not None else parsed_modelfile.get("template")
+        if template is None:
+            template = alias.get("template")
+        system_prompt = request.system if request.system is not None else parsed_modelfile.get("system")
+        if system_prompt is None:
+            system_prompt = alias.get("system")
+        license_data = request.license if request.license is not None else alias.get("license")
+        messages = request.messages if request.messages is not None else parsed_modelfile.get("messages")
+        if messages is None:
+            messages = alias.get("messages")
+
+        metadata_defaults = alias.get("metadata") or {}
+        metadata_from_modelfile = merge_metadata(parsed_modelfile.get("metadata"), metadata_defaults)
+        merged_metadata = merge_metadata(request.metadata, metadata_from_modelfile)
+        merged_metadata["model"] = alias.get("model", request.model)
+        merged_metadata["parameters"] = dict(sorted((parameters or {}).items()))
+        try:
+            validate_metadata(merged_metadata)
+        except MetadataError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        try:
+            manager.create_alias(
+                request.model,
+                alias.get("model"),
+                template,
+                system_prompt,
+                parameters,
+                request.modelfile if request.modelfile is not None else alias.get("modelfile"),
+                license_data,
+                messages,
+                merged_metadata,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"status": "success"}
 
     @app.post("/api/copy")
     async def copy_model(

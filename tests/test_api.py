@@ -115,6 +115,87 @@ def test_embedding_endpoint(client, dummy_manager):
     assert data["embeddings"] == [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]
 
 
+def test_embeddings_alias_resolution(client, dummy_manager):
+    dummy_manager.create_alias(
+        "alias",
+        "stub",
+        template=None,
+        system=None,
+        parameters={},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata={"description": "", "prompt_aliases": {"greet": "Hello there"}},
+    )
+    res = client.post("/api/embeddings", json={"model": "alias", "input": "prompt:greet"})
+    assert res.status_code == 200
+    assert dummy_manager.last_embedding_inputs == ["Hello there"]
+
+
+def test_embeddings_alias_mixed_inputs(client, dummy_manager):
+    dummy_manager.create_alias(
+        "alias",
+        "stub",
+        template=None,
+        system=None,
+        parameters={},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata={"description": "", "prompt_aliases": {"greet": "Hello there"}},
+    )
+    res = client.post(
+        "/api/embeddings",
+        json={"model": "alias", "input": ["alias:greet", "hi"]},
+    )
+    assert res.status_code == 200
+    assert dummy_manager.last_embedding_inputs == ["Hello there", "hi"]
+
+
+def test_embeddings_alias_unknown(client, dummy_manager):
+    dummy_manager.create_alias(
+        "alias",
+        "stub",
+        template=None,
+        system=None,
+        parameters={},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata={"description": "", "prompt_aliases": {}},
+    )
+    res = client.post("/api/embeddings", json={"model": "alias", "input": "alias:missing"})
+    assert res.status_code == 400
+
+
+def test_embeddings_alias_consistency(client, dummy_manager):
+    dummy_manager.create_alias(
+        "alias",
+        "stub",
+        template=None,
+        system=None,
+        parameters={},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata={"description": "", "prompt_aliases": {"greet": "Hello there"}},
+    )
+    alias_res = client.post("/api/embeddings", json={"model": "alias", "input": "greet"})
+    direct_res = client.post("/api/embeddings", json={"model": "alias", "input": "Hello there"})
+    assert alias_res.status_code == 200
+    assert direct_res.status_code == 200
+    assert alias_res.json()["embeddings"] == direct_res.json()["embeddings"]
+
+
+def test_embeddings_prompt_field(client, dummy_manager):
+    res = client.post(
+        "/api/embeddings",
+        json={"model": "stub", "prompt": "hello"},
+    )
+    assert res.status_code == 200
+    assert dummy_manager.last_embedding_inputs == ["hello"]
+
+
 def test_pull_endpoint(client):
     with client.stream("POST", "/api/pull", json={"model": "stub"}) as response:
         events = collect_stream(response)
@@ -153,6 +234,40 @@ def test_create_and_show_model(client, dummy_manager):
     assert res.status_code == 200
     body = res.json()
     assert body["model"] == "stub"
+    assert "metadata" in body
+
+
+def test_edit_model_updates_metadata(client, dummy_manager):
+    dummy_manager.create_alias(
+        "alias",
+        "stub",
+        template=None,
+        system=None,
+        parameters={},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata={"description": "", "prompt_aliases": {}},
+    )
+    res = client.post(
+        "/api/edit",
+        json={
+            "model": "alias",
+            "metadata": {"description": "Updated", "prompt_aliases": {"greet": "Hello"}},
+        },
+    )
+    assert res.status_code == 200
+    show = client.post("/api/show", json={"model": "alias"}).json()
+    assert show["metadata"]["description"] == "Updated"
+    assert show["metadata"]["prompt_aliases"]["greet"] == "Hello"
+
+
+def test_create_rejects_invalid_modelfile(client):
+    res = client.post(
+        "/api/create",
+        json={"model": "alias", "modelfile": "PARAMETER temperature 0.7", "stream": False},
+    )
+    assert res.status_code == 400
 
 
 def test_copy_and_delete_model(client, dummy_manager):

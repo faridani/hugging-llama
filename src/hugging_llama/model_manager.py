@@ -24,6 +24,14 @@ from transformers import (
 
 from .api_types import GenerateOptions
 from .logits import build_logits_processors
+from .metadata_utils import (
+    DEFAULT_PROMPT_ALIASES,
+    MetadataError,
+    merge_metadata,
+    normalize_metadata,
+    validate_metadata,
+)
+from .modelfile import build_modelfile
 from .utils import AsyncLRU, choose_dtype, detect_default_device
 
 LOGGER = logging.getLogger(__name__)
@@ -71,6 +79,7 @@ class ModelManager:
         self.blob_dir = self.cache_dir / "_blobs"
         self.blob_dir.mkdir(parents=True, exist_ok=True)
         self._load_aliases()
+        self.predefined_prompt_aliases = dict(DEFAULT_PROMPT_ALIASES)
 
     def _effective_ttl(self, ttl: float | None) -> float | None:
         return self.default_ttl if ttl is None else ttl
@@ -78,6 +87,10 @@ class ModelManager:
     def _alias_path(self, name: str) -> Path:
         sanitized = name.replace("/", "__").replace(":", "--")
         return self.alias_dir / f"{sanitized}.json"
+
+    def _modelfile_path(self, name: str) -> Path:
+        sanitized = name.replace("/", "__").replace(":", "--")
+        return self.alias_dir / f"{sanitized}.Modelfile"
 
     def _load_aliases(self) -> None:
         for path in self.alias_dir.glob("*.json"):
@@ -89,11 +102,37 @@ class ModelManager:
             name = data.get("name")
             if not name:
                 continue
+            modelfile_path = self._modelfile_path(name)
+            if modelfile_path.exists():
+                try:
+                    data["modelfile"] = modelfile_path.read_text(encoding="utf-8")
+                except OSError as exc:  # pragma: no cover - defensive
+                    LOGGER.warning("Failed to read Modelfile for %s: %s", name, exc)
+            metadata_defaults = {
+                "model": data.get("model") or name,
+                "parameters": data.get("options") or {},
+                "prompt_aliases": (data.get("metadata") or {}).get("prompt_aliases"),
+                "description": (data.get("metadata") or {}).get("description", ""),
+            }
+            try:
+                normalised_metadata = merge_metadata(data.get("metadata"), metadata_defaults)
+                validate_metadata(normalised_metadata)
+            except MetadataError as exc:
+                LOGGER.warning("Discarding invalid metadata for %s: %s", name, exc)
+                normalised_metadata = normalize_metadata(metadata_defaults)
+            data["metadata"] = normalised_metadata
             self.aliases[name] = data
 
     def _save_alias(self, alias: dict[str, Any]) -> None:
         path = self._alias_path(alias["name"])
         path.write_text(json.dumps(alias, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _persist_modelfile(self, name: str, modelfile: str | None) -> None:
+        path = self._modelfile_path(name)
+        if modelfile:
+            path.write_text(modelfile, encoding="utf-8")
+        elif path.exists():
+            path.unlink()
 
     @staticmethod
     def _now_iso() -> str:
@@ -101,6 +140,20 @@ class ModelManager:
 
     def get_alias(self, name: str) -> dict[str, Any] | None:
         return self.aliases.get(name)
+
+    def get_prompt_aliases(self, name: str) -> dict[str, str]:
+        aliases: dict[str, str] = dict(self.predefined_prompt_aliases)
+        alias_info = self.aliases.get(name)
+        if alias_info:
+            metadata = alias_info.get("metadata") or {}
+            aliases.update(metadata.get("prompt_aliases", {}))
+            base_model = alias_info.get("model")
+            if isinstance(base_model, str) and base_model and base_model != name:
+                base_alias = self.aliases.get(base_model)
+                if base_alias:
+                    base_metadata = base_alias.get("metadata") or {}
+                    aliases.update(base_metadata.get("prompt_aliases", {}))
+        return aliases
 
     def create_alias(
         self,
@@ -116,22 +169,42 @@ class ModelManager:
     ) -> dict[str, Any]:
         timestamp = self._now_iso()
         existing = self.aliases.get(name, {})
+        base_model_name = base_model or existing.get("model") or name
+        metadata_defaults = {
+            "model": base_model_name,
+            "parameters": parameters or existing.get("options") or {},
+            "prompt_aliases": (existing.get("metadata") or {}).get("prompt_aliases"),
+            "description": (existing.get("metadata") or {}).get("description", ""),
+        }
+        merged_metadata = merge_metadata(metadata, metadata_defaults)
+        merged_metadata["model"] = base_model_name
+        merged_metadata["parameters"] = dict(
+            sorted((parameters or existing.get("options") or {}).items())
+        )
+        try:
+            validate_metadata(merged_metadata)
+        except MetadataError as exc:
+            raise ValueError(f"Invalid metadata for alias {name}: {exc}") from exc
         alias: dict[str, Any] = {
             "name": name,
-            "model": base_model or existing.get("model") or name,
+            "model": base_model_name,
             "options": parameters or existing.get("options") or {},
             "template": template if template is not None else existing.get("template"),
             "system": system if system is not None else existing.get("system"),
             "modelfile": modelfile if modelfile is not None else existing.get("modelfile"),
             "license": license_info if license_info is not None else existing.get("license"),
             "messages": messages if messages is not None else existing.get("messages"),
-            "metadata": metadata if metadata is not None else existing.get("metadata", {}),
+            "metadata": merged_metadata,
             "details": existing.get("details", {}),
             "created_at": existing.get("created_at", timestamp),
             "modified_at": timestamp,
         }
+        built = build_modelfile(alias)
+        if built:
+            alias["modelfile"] = built
         self.aliases[name] = alias
         self._save_alias(alias)
+        self._persist_modelfile(name, alias.get("modelfile"))
         return alias
 
     def list_alias_records(self) -> list[dict[str, Any]]:
@@ -187,8 +260,24 @@ class ModelManager:
             new_alias = json.loads(json.dumps(alias))
             new_alias["name"] = destination
             new_alias["modified_at"] = timestamp
+            metadata_defaults = {
+                "model": new_alias.get("model") or destination,
+                "parameters": new_alias.get("options") or {},
+                "prompt_aliases": (new_alias.get("metadata") or {}).get("prompt_aliases"),
+                "description": (new_alias.get("metadata") or {}).get("description", ""),
+            }
+            try:
+                new_alias["metadata"] = merge_metadata(new_alias.get("metadata"), metadata_defaults)
+                validate_metadata(new_alias["metadata"])
+            except MetadataError as exc:
+                LOGGER.warning("Invalid metadata while copying %s -> %s: %s", source, destination, exc)
+                new_alias["metadata"] = normalize_metadata(metadata_defaults)
+            rebuilt = build_modelfile(new_alias)
+            if rebuilt:
+                new_alias["modelfile"] = rebuilt
             self.aliases[destination] = new_alias
             self._save_alias(new_alias)
+            self._persist_modelfile(destination, new_alias.get("modelfile"))
             return True
         repo_dir = self.cache_dir / source.replace("/", "__")
         if not repo_dir.exists():
@@ -204,6 +293,9 @@ class ModelManager:
             path = self._alias_path(name)
             if path.exists():
                 path.unlink()
+            modelfile_path = self._modelfile_path(name)
+            if modelfile_path.exists():
+                modelfile_path.unlink()
         repo_dir = self.cache_dir / name.replace("/", "__")
         if repo_dir.exists():
             shutil.rmtree(repo_dir)

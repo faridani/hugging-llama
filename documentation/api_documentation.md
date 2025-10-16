@@ -113,6 +113,7 @@ Computes embedding vectors for text inputs.
     "keep_alive": "10m"
   }
   ```
+- **Alias Support:** You may also provide a `prompt` field or strings prefixed with `prompt:` / `alias:` to reference stored prompt aliases. These aliases are resolved before tokenisation so embedding vectors remain deterministic.
 - **Example Use Case:** Produce embeddings for semantic search or similarity scoring without reloading the model between requests.
 - **Response:**
   ```json
@@ -122,6 +123,60 @@ Computes embedding vectors for text inputs.
     "total_duration": 0.2274
   }
   ```
+
+### `POST /api/create`
+
+Creates or updates an alias backed by a Modelfile.
+
+- **Request Body:**
+  ```json
+  {
+    "model": "my-alias",
+    "from": "mistralai/Mistral-7B-Instruct-v0.2",
+    "metadata": {
+      "description": "My curated mistral variant",
+      "prompt_aliases": {"greet": "You are a helpful assistant"}
+    }
+  }
+  ```
+- **Notes:** Metadata keys are normalised (lowercase underscores) and validated before persistence. Prompt aliases defined here become available to `/api/embeddings` requests immediately.
+
+### `POST /api/show`
+
+Returns the current metadata, Modelfile, and alias details.
+
+- **Request Body:**
+  ```json
+  {
+    "model": "my-alias"
+  }
+  ```
+- **Response Excerpt:**
+  ```json
+  {
+    "model": "mistralai/Mistral-7B-Instruct-v0.2",
+    "metadata": {
+      "description": "My curated mistral variant",
+      "prompt_aliases": {"greet": "You are a helpful assistant"}
+    }
+  }
+  ```
+
+### `POST /api/edit`
+
+Allows targeted updates to alias metadata or its stored Modelfile.
+
+- **Request Body:**
+  ```json
+  {
+    "model": "my-alias",
+    "metadata": {
+      "description": "Refined instructions",
+      "prompt_aliases": {"summarise": "Summarise the following text"}
+    }
+  }
+  ```
+- **Notes:** Fields omitted from the payload keep their previous values. Validation errors return HTTP 400 with a descriptive message.
 
 ### `POST /api/pull`
 

@@ -7,7 +7,7 @@ import types
 from collections.abc import Iterable
 from pathlib import Path
 from queue import Queue
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -76,6 +76,7 @@ def _install_module_shims() -> None:
 
 _install_module_shims()
 
+from hugging_llama.metadata_utils import merge_metadata  # noqa: E402
 from hugging_llama.server import create_app  # noqa: E402
 
 
@@ -160,6 +161,8 @@ class DummyManager:
         self.blobs: dict[str, bytes] = {}
         self.keep_alive_updates: dict[str, float | None] = {}
         self.unloaded: list[str] = []
+        self.predefined_prompt_aliases = {"default": ""}
+        self.last_embedding_inputs: list[str] = []
 
     async def ensure_model(self, name: str, options: Any, ttl: Any) -> Any:
         return types.SimpleNamespace(
@@ -186,8 +189,11 @@ class DummyManager:
                     return list(self._data)
 
             def encode(self, inputs: Iterable[str]) -> list[Embedder._Vector]:
-                return [self._Vector(self.vec) for _ in inputs]
+                parent = cast("DummyManager", Embedder.parent)
+                parent.last_embedding_inputs = [str(item) for item in inputs]
+                return [self._Vector(self.vec) for _ in parent.last_embedding_inputs]
 
+        Embedder.parent = self  # type: ignore[attr-defined]
         return types.SimpleNamespace(model=Embedder(vector), tokenizer=None, kind="embedding")
 
     async def list_loaded(self) -> dict[str, Any]:
@@ -208,6 +214,13 @@ class DummyManager:
         messages: list[dict[str, Any]] | None,
         metadata: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        merged_metadata = merge_metadata(
+            metadata,
+            {
+                "model": base_model or name,
+                "parameters": parameters or {},
+            },
+        )
         alias = {
             "name": name,
             "model": base_model or name,
@@ -217,7 +230,7 @@ class DummyManager:
             "modelfile": modelfile,
             "license": license_info,
             "messages": messages,
-            "metadata": metadata or {},
+            "metadata": merged_metadata,
             "details": {},
             "modified_at": "now",
         }
@@ -226,6 +239,13 @@ class DummyManager:
 
     def get_alias(self, name: str) -> dict[str, Any] | None:
         return self.aliases.get(name)
+
+    def get_prompt_aliases(self, name: str) -> dict[str, str]:
+        aliases = dict(self.predefined_prompt_aliases)
+        record = self.aliases.get(name)
+        if record:
+            aliases.update(record.get("metadata", {}).get("prompt_aliases", {}))
+        return aliases
 
     def list_alias_records(self) -> list[dict[str, Any]]:
         return [dict(alias, digest="dummy", size=0) for alias in self.aliases.values()]
