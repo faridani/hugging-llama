@@ -30,6 +30,13 @@ Hugging Llama provides a fully local, Ollama-compatible runtime built on top of 
 
 ## Installation
 
+> [!NOTE]  
+> 
+> For Windows, please use WSL
+> 
+
+
+
 It is better to setup a conda environment before running this code 
 
 ```bash
