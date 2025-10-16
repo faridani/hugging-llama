@@ -1,8 +1,8 @@
 """Tests for custom logits processors."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from types import SimpleNamespace
-from typing import Iterable
 
 import pytest
 
@@ -45,11 +45,11 @@ class _ScoreSlice:
     def __isub__(self, other):
         if isinstance(other, SimpleTensor):
             values = list(other)
-        elif isinstance(other, (int, float)):
+        elif isinstance(other, int | float):
             values = [float(other)] * len(self._indices)
         else:
             values = list(other)
-        for index, value in zip(self._indices, values):
+        for index, value in zip(self._indices, values, strict=False):
             self._row[index] -= float(value)
         return self
 
@@ -78,11 +78,11 @@ class SimpleScores(list[list[float]]):
                 indices = list(column_data)
             if isinstance(value, SimpleTensor):
                 values = list(value)
-            elif isinstance(value, (int, float)):
+            elif isinstance(value, int | float):
                 values = [float(value)] * len(indices)
             else:
                 values = [float(v) for v in value]
-            for index, val in zip(indices, values):
+            for index, val in zip(indices, values, strict=False):
                 row[index] = float(val)
             return None
         return super().__setitem__(key, value)
