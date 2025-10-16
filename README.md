@@ -4,7 +4,7 @@ An Ollama-like AI Serving API for Hugging Face Models
 
 <img src="images/logo.png" alt="hugging llama logo" height="300">
 
-Hugging Llama provides a fully local, Ollama-compatible runtime built on top of Hugging Face `transformers`. It includes a FastAPI + Uvicorn server, an ergonomic CLI, Docker packaging, and comprehensive tests that cover streaming/non-streaming generation, chat, embeddings, model pulls, and concurrency safety.
+Hugging Llama provides a fully local, Ollama-compatible runtime built on top of Hugging Face `transformers`. It includes a FastAPI + Uvicorn server, a CLI, Docker packaging, and comprehensive tests that cover streaming/non-streaming generation, chat, embeddings, model pulls, and concurrency safety.
 
 [![Python Package CI](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml)
 [![Ruff Lint](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml)
@@ -51,14 +51,17 @@ pip install .[dev]
 
 ## Running the Server
 
+You need to start the backend by running the following command
+
 ```bash
-hugging-llama serve --host 127.0.0.1 --port 11434 \
-  --max-resident-models 2 --model-ttl 600
+hugging-llama serve --host 127.0.0.1 --port 11434 --max-resident-models 2 --model-ttl 600
 ```
+
+**note** if you get a port error, you can simply change the port number to another (see the [FAQ doc](/documentation/faq.md)  )
 
 The server binds to `127.0.0.1` by default. Use `--host 0.0.0.0` in Docker or trusted networks. TLS can be configured through Uvicorn settings.
 
-To change the default port without updating every command invocation, set the `OLLAMA_LOCAL_PORT`
+**advanced users:** To change the default port without updating every command invocation, set the `OLLAMA_LOCAL_PORT`
 environment variable. The CLI picks up this value for both `serve` (as the default for
 `--port`) and for the default `--url` used by other subcommands.
 
@@ -66,18 +69,27 @@ environment variable. The CLI picks up this value for both `serve` (as the defau
 
 ```bash
 hugging-llama pull hf-internal-testing/tiny-random-gpt2
+hugging-llama pull openai/gpt-oss-20b
 hugging-llama ps
 hugging-llama embed sentence-transformers/all-MiniLM-L6-v2 "embedding request"
 hugging-llama catalog --memory 24GB
 ```
 
+
 ## API Quickstart
 
+Mac and Linux 
+
 ```bash
-curl -sS http://127.0.0.1:11434/api/generate \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"hf-internal-testing/tiny-random-gpt2","prompt":"Hello","stream":false}'
+curl -sS http://127.0.0.1:11434/api/generate -H 'Content-Type: application/json' -d '{"model":"hf-internal-testing/tiny-random-gpt2","prompt":"Hello","stream":false}'
 ```
+
+
+Windows PowerShell
+```powershell
+Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/generate' -Method 'POST' -Headers @{'Content-Type'='application/json'} -Body '{"model":"hf-internal-testing/tiny-random-gpt2","prompt":"Hello","stream":false}'
+```
+
 
 See `scripts/` for additional curl snippets.
 
