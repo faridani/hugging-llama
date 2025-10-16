@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import uvicorn
 
-from .model_catalog import MODEL_CATALOG, CatalogEntry
+from .model_catalog import CatalogEntry, load_model_catalog
 
 LOGGER = logging.getLogger(__name__)
 
@@ -173,7 +173,8 @@ def command_catalog(memory_spec: str | None, show_all: bool) -> int:
                 "Use --memory to filter by a specific amount.",
             )
 
-    sorted_catalog = sorted(MODEL_CATALOG, key=lambda entry: entry.size_gb)
+    catalog = load_model_catalog()
+    sorted_catalog = sorted(catalog, key=lambda entry: entry.size_gb)
     if show_all:
         filtered_entries = list(sorted_catalog)
     else:
