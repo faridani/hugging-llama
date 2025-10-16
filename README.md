@@ -9,7 +9,7 @@ Hugging Llama provides a fully local, Ollama-compatible runtime built on top of 
 [![End-to-end tests CI](https://github.com/faridani/hugging-llama/actions/workflows/ci.yml/badge.svg)](https://github.com/faridani/hugging-llama/actions/workflows/ci.yml)
  [![Python Package CI](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-tests.yml)
 [![Docker Build](https://github.com/faridani/hugging-llama/actions/workflows/docker-build.yml/badge.svg)](https://github.com/faridani/hugging-llama/actions/workflows/docker-build.yml) [![Ruff Lint](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml)
-[![Python Type Check](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml)
+[![Python Type Check](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml) [![Coverage](documentation/badges/coverage.svg)](documentation/badges/coverage.svg)
 
 ## Features
 
