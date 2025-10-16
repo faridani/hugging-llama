@@ -7,7 +7,7 @@ import types
 from collections.abc import Iterable
 from pathlib import Path
 from queue import Queue
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -293,3 +293,51 @@ def patch_components(monkeypatch: pytest.MonkeyPatch, dummy_manager: DummyManage
 def client() -> TestClient:
     app = create_app(cache_dir=MOCK_CACHE_DIR)
     return TestClient(app)
+
+
+@pytest.fixture()
+def e2e_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[TestClient]:
+    from hugging_llama import model_manager as mm
+    from hugging_llama import server as server_module
+    import torch
+
+    monkeypatch.setattr(server_module, "ModelManager", mm.ModelManager)
+
+    created_managers: list[mm.ModelManager] = []
+    original_init = mm.ModelManager.__init__
+
+    def recording_init(self, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        created_managers.append(self)
+
+    monkeypatch.setattr(mm.ModelManager, "__init__", recording_init)
+
+    def fake_load(self: mm.ModelManager, name: str, options: dict[str, Any]) -> mm.ManagedModel:
+        del options
+        repo_dir = self.cache_dir / name.replace("/", "__")
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        tokenizer = FakeTokenizer()
+        tokenizer.padding_side = "left"
+        tokenizer.truncation_side = "left"
+        return mm.ManagedModel(
+            model=FakeModel(["hello", " world", "!"]),
+            tokenizer=tokenizer,
+            kind="generate",
+            path=repo_dir,
+            device="cpu",
+            dtype=getattr(torch, "float32"),
+            details={"family": "test", "parameter_size": 0, "format": "mock"},
+        )
+
+    monkeypatch.setattr(mm.ModelManager, "_load_text_model", fake_load, raising=False)
+
+    app = server_module.create_app(cache_dir=tmp_path)
+    assert created_managers, "ModelManager was not instantiated"
+    manager = created_managers[0]
+    app.state.test_manager = manager
+
+    client = TestClient(app)
+    try:
+        yield client
+    finally:
+        client.close()
