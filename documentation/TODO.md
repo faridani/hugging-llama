@@ -2,7 +2,7 @@
 
 # P0
 - [x] hugging-llama catalog --memory 24GB does not pull all of the models  
-- [ ] There is a problem with the `pull` command on Windows. It shows `pulling manifest` but it does not appear to be working on Win 11 
+- [x] There is a problem with the `pull` command on Windows. It shows `pulling manifest` but it does not appear to be working on Win 11. **Solution** `curl` is a bit clunky on PowerShell, ask the users to just use WSL on Windows to use consisten commands with Mac/Linux but benefit from better GPU 
       
 # P2
 - [ ] Add analytics pipeline for request tracking and latency dashboards.
