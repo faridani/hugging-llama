@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,6 +131,65 @@ def test_ps_endpoint(client):
     res = client.get("/api/ps")
     assert res.status_code == 200
     assert "models" in res.json()
+
+
+def test_root_endpoint(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert res.text == "Ollama is running"
+
+
+def test_version_endpoint(client):
+    res = client.get("/api/version")
+    assert res.status_code == 200
+    assert "version" in res.json()
+
+
+def test_create_and_show_model(client, dummy_manager):
+    with client.stream("POST", "/api/create", json={"model": "alias", "from": "stub"}) as response:
+        events = collect_stream(response)
+    assert events[-1]["status"] == "success"
+    res = client.post("/api/show", json={"model": "alias"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["model"] == "stub"
+
+
+def test_copy_and_delete_model(client, dummy_manager):
+    dummy_manager.create_alias("alias", "stub", None, None, {}, None, None, None, None)
+    res = client.post("/api/copy", json={"source": "alias", "destination": "alias-copy"})
+    assert res.status_code == 200
+    assert "alias-copy" in dummy_manager.aliases
+    res_delete = client.request("DELETE", "/api/delete", json={"model": "alias-copy"})
+    assert res_delete.status_code == 200
+
+
+def test_push_endpoint(client):
+    with client.stream("POST", "/api/push", json={"model": "stub"}) as response:
+        events = collect_stream(response)
+    assert events[-1]["status"] == "success"
+
+
+def test_blob_endpoints(client, dummy_manager):
+    data = b"blob"
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    res = client.post(f"/api/blobs/{digest}", content=data)
+    assert res.status_code == 201
+    head = client.head(f"/api/blobs/{digest}")
+    assert head.status_code == 200
+
+
+def test_unload_endpoint_unloads_model(client, dummy_manager):
+    res = client.post("/api/unload", json={"model": "stub"})
+    assert res.status_code == 200
+    assert dummy_manager.unloaded == ["stub"]
+
+
+def test_unload_endpoint_updates_keep_alive(client, dummy_manager):
+    res = client.post("/api/unload", json={"model": "stub", "keep_alive": "30s"})
+    assert res.status_code == 200
+    assert dummy_manager.keep_alive_updates["stub"] == 30.0
+    assert dummy_manager.unloaded == []
 
 
 def test_concurrent_generate(client, dummy_manager):

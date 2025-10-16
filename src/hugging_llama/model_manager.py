@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import math
 import inspect
+import json
 import logging
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -61,9 +66,169 @@ class ModelManager:
         self.models = AsyncLRU(max_items=max_resident_models)
         self.default_ttl = default_ttl
         self.aliases: dict[str, dict[str, Any]] = {}
+        self.alias_dir = self.cache_dir / "_aliases"
+        self.alias_dir.mkdir(parents=True, exist_ok=True)
+        self.blob_dir = self.cache_dir / "_blobs"
+        self.blob_dir.mkdir(parents=True, exist_ok=True)
+        self._load_aliases()
 
     def _effective_ttl(self, ttl: float | None) -> float | None:
         return self.default_ttl if ttl is None else ttl
+
+    def _alias_path(self, name: str) -> Path:
+        sanitized = name.replace("/", "__").replace(":", "--")
+        return self.alias_dir / f"{sanitized}.json"
+
+    def _load_aliases(self) -> None:
+        for path in self.alias_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:  # pragma: no cover - defensive
+                LOGGER.warning("Failed to load alias metadata from %s: %s", path, exc)
+                continue
+            name = data.get("name")
+            if not name:
+                continue
+            self.aliases[name] = data
+
+    def _save_alias(self, alias: dict[str, Any]) -> None:
+        path = self._alias_path(alias["name"])
+        path.write_text(json.dumps(alias, indent=2, sort_keys=True), encoding="utf-8")
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def get_alias(self, name: str) -> dict[str, Any] | None:
+        return self.aliases.get(name)
+
+    def create_alias(
+        self,
+        name: str,
+        base_model: str | None,
+        template: str | None,
+        system: str | None,
+        parameters: dict[str, Any] | None,
+        modelfile: str | None,
+        license_info: list[str] | str | None,
+        messages: list[dict[str, Any]] | None,
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        timestamp = self._now_iso()
+        existing = self.aliases.get(name, {})
+        alias: dict[str, Any] = {
+            "name": name,
+            "model": base_model or existing.get("model") or name,
+            "options": parameters or existing.get("options") or {},
+            "template": template if template is not None else existing.get("template"),
+            "system": system if system is not None else existing.get("system"),
+            "modelfile": modelfile if modelfile is not None else existing.get("modelfile"),
+            "license": license_info if license_info is not None else existing.get("license"),
+            "messages": messages if messages is not None else existing.get("messages"),
+            "metadata": metadata if metadata is not None else existing.get("metadata", {}),
+            "details": existing.get("details", {}),
+            "created_at": existing.get("created_at", timestamp),
+            "modified_at": timestamp,
+        }
+        self.aliases[name] = alias
+        self._save_alias(alias)
+        return alias
+
+    def list_alias_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for alias in self.aliases.values():
+            record = dict(alias)
+            record.setdefault("details", {})
+            if "digest" not in record:
+                record["digest"] = hashlib.sha256(
+                    json.dumps({k: v for k, v in alias.items() if k != "digest"}, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+            base_model = record.get("model", record["name"])
+            repo_dir = self.cache_dir / base_model.replace("/", "__")
+            if repo_dir.exists():
+                try:
+                    record["size"] = sum(p.stat().st_size for p in repo_dir.rglob("*"))
+                except OSError:  # pragma: no cover - filesystem errors are rare
+                    record["size"] = 0
+            else:
+                record.setdefault("size", 0)
+            records.append(record)
+        return records
+
+    def describe_model(self, name: str) -> dict[str, Any] | None:
+        alias = self.aliases.get(name)
+        base_name = alias.get("model") if alias else name
+        repo_dir = self.cache_dir / base_name.replace("/", "__")
+        details = alias.get("details") if alias else {}
+        info: dict[str, Any] = {
+            "name": name,
+            "model": base_name,
+            "modelfile": alias.get("modelfile") if alias else None,
+            "template": alias.get("template") if alias else None,
+            "system": alias.get("system") if alias else None,
+            "parameters": alias.get("options") if alias else {},
+            "license": alias.get("license") if alias else None,
+            "messages": alias.get("messages") if alias else None,
+            "metadata": alias.get("metadata") if alias else {},
+            "details": details or {},
+        }
+        if repo_dir.exists():
+            info["size"] = sum(p.stat().st_size for p in repo_dir.rglob("*"))
+            info["path"] = str(repo_dir)
+        return info if alias or repo_dir.exists() else None
+
+    def copy_model(self, source: str, destination: str) -> bool:
+        if destination == source:
+            return True
+        alias = self.aliases.get(source)
+        timestamp = self._now_iso()
+        if alias:
+            new_alias = json.loads(json.dumps(alias))
+            new_alias["name"] = destination
+            new_alias["modified_at"] = timestamp
+            self.aliases[destination] = new_alias
+            self._save_alias(new_alias)
+            return True
+        repo_dir = self.cache_dir / source.replace("/", "__")
+        if not repo_dir.exists():
+            return False
+        self.create_alias(destination, source, None, None, {}, None, None, None, None)
+        return True
+
+    def delete_model(self, name: str) -> bool:
+        removed = False
+        if name in self.aliases:
+            removed = True
+            self.aliases.pop(name)
+            path = self._alias_path(name)
+            if path.exists():
+                path.unlink()
+        repo_dir = self.cache_dir / name.replace("/", "__")
+        if repo_dir.exists():
+            shutil.rmtree(repo_dir)
+            removed = True
+        return removed
+
+    def blob_exists(self, digest: str) -> bool:
+        return self._blob_path(digest).exists()
+
+    def _blob_path(self, digest: str) -> Path:
+        sanitized = digest.replace("/", "_").replace(":", "_")
+        return self.blob_dir / sanitized
+
+    def save_blob(self, digest: str, data: bytes) -> Path:
+        if not data:
+            raise ValueError("Empty payload is not allowed")
+        algo, _, digest_value = digest.partition(":")
+        expected = digest_value or algo
+        if not expected:
+            raise ValueError("Invalid digest")
+        computed = hashlib.sha256(data).hexdigest()
+        if computed.lower() != expected.lower():
+            raise ValueError("Digest mismatch")
+        path = self._blob_path(digest)
+        path.write_bytes(data)
+        return path
 
     def resolve_model(self, name: str) -> tuple[str, dict[str, Any]]:
         info = self.aliases.get(name, {"model": name, "options": {}})
@@ -150,6 +315,13 @@ class ModelManager:
         resolved_name, _ = self.resolve_model(name)
         async with self.models._global_lock:  # noqa: SLF001
             await self.models._evict_key_locked(resolved_name)
+
+    async def set_keep_alive(self, name: str, ttl: float | None) -> None:
+        resolved_name, _ = self.resolve_model(name)
+        ttl_value = None if ttl is None or math.isinf(ttl) else ttl
+        await self.models.update_ttl(resolved_name, ttl_value)
+        if ttl_value == 0:
+            await self.models.evict_expired()
 
     async def pull(self, name: str, revision: str | None, trust_remote_code: bool) -> Path:
         repo_dir = self.cache_dir / name.replace("/", "__")

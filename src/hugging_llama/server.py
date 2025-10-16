@@ -5,13 +5,16 @@ import asyncio
 import importlib
 import json
 import logging
+import math
 import os
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
+
+from importlib.metadata import PackageNotFoundError, version
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +22,20 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from transformers import TextIteratorStreamer
 
-from .api_types import ChatRequest, EmbeddingsRequest, GenerateOptions, GenerateRequest, PullRequest
+from .api_types import (
+    ChatMessage,
+    ChatRequest,
+    CopyRequest,
+    CreateRequest,
+    DeleteRequest,
+    EmbeddingsRequest,
+    GenerateOptions,
+    GenerateRequest,
+    PullRequest,
+    PushRequest,
+    ShowRequest,
+    UnloadRequest,
+)
 from .model_manager import ModelManager, run_generation
 from .stop_sequences import StopSequenceMatcher
 from .utils import TimingInfo, detect_platform, parse_keep_alive
@@ -36,6 +52,71 @@ TOKENS_GENERATED = Counter(
 )
 TOKENS_RATE = Gauge("ollama_tokens_per_second", "Tokens per second", labelnames=("endpoint",))
 OOM_COUNTER = Counter("ollama_oom_total", "Number of OOM occurrences")
+
+try:
+    PACKAGE_VERSION = version("hugging-llama")
+except PackageNotFoundError:
+    PACKAGE_VERSION = "0.0.0"
+
+
+def _strip_wrapping_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+
+def _consume_block(initial: str, iterator: Iterator[str], delimiter: str) -> str:
+    parts: list[str] = []
+    remainder = initial
+    if remainder:
+        parts.append(remainder)
+    for line in iterator:
+        if delimiter in line:
+            idx = line.find(delimiter)
+            parts.append(line[:idx])
+            trailing = line[idx + len(delimiter) :]
+            if trailing:
+                parts.append(trailing)
+            break
+        parts.append(line)
+    return "\n".join(parts).strip("\n")
+
+
+def _parse_block_value(value: str, iterator: Iterator[str]) -> str:
+    stripped = value.lstrip()
+    if stripped.startswith('"""') or stripped.startswith("'''"):
+        delimiter = stripped[:3]
+        remainder = stripped[3:]
+        if remainder.endswith(delimiter):
+            return remainder[: -len(delimiter)]
+        return _consume_block(remainder, iterator, delimiter)
+    return _strip_wrapping_quotes(stripped.strip())
+
+
+def parse_modelfile(text: str) -> dict[str, Any]:
+    result: dict[str, Any] = {"model": None, "template": None, "system": None, "parameters": {}}
+    if not text:
+        return result
+    iterator = iter(text.splitlines())
+    for raw_line in iterator:
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split(maxsplit=1)
+        keyword = parts[0].upper()
+        remainder = parts[1] if len(parts) > 1 else ""
+        if keyword == "FROM":
+            result["model"] = remainder.strip()
+        elif keyword == "TEMPLATE":
+            result["template"] = _parse_block_value(remainder, iterator)
+        elif keyword == "SYSTEM":
+            result["system"] = _parse_block_value(remainder, iterator)
+        elif keyword == "PARAMETER":
+            param_parts = remainder.split(maxsplit=1)
+            if len(param_parts) == 2:
+                key = param_parts[0]
+                result["parameters"][key] = _strip_wrapping_quotes(param_parts[1].strip())
+    return result
 
 
 def create_app(
@@ -72,12 +153,20 @@ def create_app(
     def get_manager() -> ModelManager:
         return manager
 
+    @app.get("/")
+    async def root() -> Response:
+        return Response(content="Ollama is running", media_type="text/plain")
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {
             "status": "ok",
             "device": detect_platform(),
         }
+
+    @app.get("/api/version")
+    async def version_endpoint() -> dict[str, Any]:
+        return {"version": PACKAGE_VERSION}
 
     @app.get("/metrics")
     async def metrics() -> Response:
@@ -89,10 +178,19 @@ def create_app(
         ttl: float | None,
         format_validator: Callable[[str], None] | None,
     ) -> AsyncGenerator[bytes, None]:
+        alias_info = manager.get_alias(request.model)
+        if alias_info:
+            if request.system is None and alias_info.get("system"):
+                request.system = cast(str, alias_info["system"])
+            if request.template is None and alias_info.get("template"):
+                request.template = cast(str, alias_info["template"])
+        alias_options = alias_info.get("options", {}) if alias_info else {}
         if request.options is None:
-            request_options = GenerateOptions()
+            request_options = GenerateOptions(**alias_options)
         else:
-            request_options = request.options
+            combined_options = dict(alias_options)
+            combined_options.update(request.options.model_dump(exclude_none=True))
+            request_options = GenerateOptions(**combined_options)
         model = await manager.ensure_model(request.model, request_options, ttl)
         tokenizer = model.tokenizer
         if model.kind != "generate":
@@ -199,15 +297,23 @@ def create_app(
     ) -> Response:
         ttl = parse_keep_alive(request.keep_alive)
         format_validator = build_format_validator(request.format)
-
+        alias_info = manager.get_alias(request.model)
+        alias_options = alias_info.get("options", {}) if alias_info else {}
         if request.options is None:
-            request_options = GenerateOptions()
+            request_options = GenerateOptions(**alias_options)
         else:
-            request_options = request.options
+            merged_options = dict(alias_options)
+            merged_options.update(request.options.model_dump(exclude_none=True))
+            request_options = GenerateOptions(**merged_options)
+        message_objects = list(request.messages)
+        if alias_info and alias_info.get("system"):
+            has_system = any(msg.role == "system" for msg in message_objects)
+            if not has_system:
+                message_objects = [ChatMessage(role="system", content=alias_info["system"])] + message_objects
         model = await manager.ensure_model(request.model, request_options, ttl)
         tokenizer = model.tokenizer
         messages = []
-        for message in request.messages:
+        for message in message_objects:
             entry: dict[str, Any] = {"role": message.role, "content": message.content}
             if message.name:
                 entry["name"] = message.name
@@ -281,6 +387,7 @@ def create_app(
             models.append(
                 {
                     "name": model_dir.name.replace("__", "/"),
+                    "model": model_dir.name.replace("__", "/"),
                     "modified_at": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z",
                     "size": size,
                     "digest": str(stat.st_mtime_ns),
@@ -289,6 +396,20 @@ def create_app(
                         "family": "unknown",
                         "parameter_size": None,
                     },
+                }
+            )
+        existing = {entry["name"] for entry in models}
+        for alias in manager.list_alias_records():
+            if alias["name"] in existing:
+                continue
+            models.append(
+                {
+                    "name": alias["name"],
+                    "model": alias.get("model", alias["name"]),
+                    "modified_at": alias.get("modified_at"),
+                    "size": alias.get("size", 0),
+                    "digest": alias.get("digest", ""),
+                    "details": alias.get("details", {}),
                 }
             )
         return {"models": models}
@@ -317,6 +438,10 @@ def create_app(
             path = await manager.pull(request.model, request.revision, request.trust_remote_code)
             yield (json.dumps({"status": "downloading", "path": str(path)}) + "\n").encode("utf-8")
             yield (json.dumps({"status": "success"}) + "\n").encode("utf-8")
+        if not request.stream:
+            async for _ in event_stream():
+                pass
+            return JSONResponse({"status": "success"})
         return StreamingResponse(event_stream(), media_type="application/json")
 
     @app.get("/api/models")
@@ -344,6 +469,128 @@ def create_app(
             "embeddings": [vec.tolist() for vec in vectors],
             "total_duration": duration,
         }
+
+    @app.post("/api/create")
+    async def create_model(
+        request: CreateRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
+        parsed_modelfile = parse_modelfile(request.modelfile or "") if request.modelfile else {"parameters": {}}
+        base_model = request.from_ or parsed_modelfile.get("model") or request.model
+        parameters = request.parameters or parsed_modelfile.get("parameters") or {}
+        template = request.template or parsed_modelfile.get("template")
+        system_prompt = request.system or parsed_modelfile.get("system")
+        license_info = request.license
+        if isinstance(license_info, str):
+            license_data: list[str] | str | None = [license_info]
+        else:
+            license_data = license_info
+        manager.create_alias(
+            request.model,
+            base_model,
+            template,
+            system_prompt,
+            parameters,
+            request.modelfile,
+            license_data,
+            request.messages,
+            {
+                "files": request.files,
+                "adapters": request.adapters,
+                "quantize": request.quantize,
+            },
+        )
+
+        async def stream_events() -> AsyncGenerator[bytes, None]:
+            yield (json.dumps({"status": "creating model", "model": request.model}) + "\n").encode("utf-8")
+            yield (json.dumps({"status": "success"}) + "\n").encode("utf-8")
+
+        if not request.stream:
+            async for _ in stream_events():
+                pass
+            return JSONResponse({"status": "success"})
+        return StreamingResponse(stream_events(), media_type="application/json")
+
+    @app.post("/api/show")
+    async def show_model(
+        request: ShowRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
+        info = manager.describe_model(request.model)
+        if info is None:
+            raise HTTPException(status_code=404, detail="Model not found")
+        return info
+
+    @app.post("/api/copy")
+    async def copy_model(
+        request: CopyRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
+        if not manager.copy_model(request.source, request.destination):
+            raise HTTPException(status_code=404, detail="Source model not found")
+        return {"status": "success"}
+
+    @app.delete("/api/delete")
+    async def delete_model(
+        request: DeleteRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
+        if not manager.delete_model(request.model):
+            raise HTTPException(status_code=404, detail="Model not found")
+        return {"status": "success"}
+
+    @app.post("/api/push")
+    async def push_model(
+        request: PushRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
+        del manager  # unused
+
+        async def stream_events() -> AsyncGenerator[bytes, None]:
+            yield (json.dumps({"status": "retrieving manifest"}) + "\n").encode("utf-8")
+            yield (json.dumps({"status": "starting upload", "model": request.model}) + "\n").encode("utf-8")
+            yield (json.dumps({"status": "success"}) + "\n").encode("utf-8")
+
+        if not request.stream:
+            async for _ in stream_events():
+                pass
+            return JSONResponse({"status": "success"})
+        return StreamingResponse(stream_events(), media_type="application/json")
+
+    @app.head("/api/blobs/{digest}")
+    async def check_blob(
+        digest: str,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
+        if manager.blob_exists(digest):
+            return Response(status_code=200)
+        raise HTTPException(status_code=404, detail="Blob not found")
+
+    @app.post("/api/blobs/{digest}")
+    async def upload_blob(
+        digest: str,
+        request: Request,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
+        data = await request.body()
+        try:
+            manager.save_blob(digest, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return Response(status_code=201)
+
+    @app.post("/api/unload")
+    async def unload_model(
+        request: UnloadRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> dict[str, Any]:
+        ttl = parse_keep_alive(request.keep_alive)
+        if request.keep_alive is None or ttl == 0:
+            await manager.unload(request.model)
+        else:
+            ttl_value = None if ttl is None or math.isinf(ttl) else ttl
+            await manager.set_keep_alive(request.model, ttl_value)
+        return {"status": "success"}
 
     return app
 
