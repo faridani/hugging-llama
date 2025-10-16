@@ -1,8 +1,9 @@
 # TODO
 
 # P0
-- [ ] hugging-llama catalog --memory 24GB does not pull all of the models  
-
+- [*] hugging-llama catalog --memory 24GB does not pull all of the models  
+- [ ] There is a problem with the `pull` command on Windows. It shows `pulling manifest` but it does not appear to be working on Win 11 
+      
 # P2
 - [ ] Add analytics pipeline for request tracking and latency dashboards.
 - [ ] Implement improved parallel serving to maximize hardware utilization across models.
