@@ -431,7 +431,7 @@ def create_app(
         return {"models": models}
 
     @app.post("/api/pull")
-    async def pull_endpoint(request: PullRequest) -> StreamingResponse:
+    async def pull_endpoint(request: PullRequest) -> Response:
         async def event_stream() -> AsyncGenerator[bytes, None]:
             yield (json.dumps({"status": "pulling manifest", "digest": ""}) + "\n").encode("utf-8")
             path = await manager.pull(request.model, request.revision, request.trust_remote_code)

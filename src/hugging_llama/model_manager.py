@@ -157,7 +157,8 @@ class ModelManager:
 
     def describe_model(self, name: str) -> dict[str, Any] | None:
         alias = self.aliases.get(name)
-        base_name = alias.get("model") if alias else name
+        alias_model = alias.get("model") if alias else None
+        base_name = alias_model if isinstance(alias_model, str) and alias_model else name
         repo_dir = self.cache_dir / base_name.replace("/", "__")
         details = alias.get("details") if alias else {}
         info: dict[str, Any] = {
