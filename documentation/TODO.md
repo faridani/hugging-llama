@@ -1,6 +1,7 @@
 # TODO
 
 # P0
+- [ ] OpenWebUI integration needs work. Particularly I belive it is only the validation and health check that needs to become consistent with Ollama 
 - [x] hugging-llama catalog --memory 24GB does not pull all of the models  
 - [x] There is a problem with the `pull` command on Windows. It shows `pulling manifest` but it does not appear to be working on Win 11. **Solution** `curl` is a bit clunky on PowerShell, ask the users to just use WSL on Windows to use consisten commands with Mac/Linux but benefit from better GPU 
       
