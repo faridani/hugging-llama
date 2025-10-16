@@ -101,8 +101,52 @@ class PullRequest(BaseModel):
     model: str
     revision: str | None = None
     trust_remote_code: bool = False
+    insecure: bool = False
+    stream: bool = True
+
+
+class CreateRequest(BaseModel):
+    model: str
+    from_: str | None = Field(default=None, alias="from")
+    files: dict[str, str] | None = None
+    adapters: dict[str, str] | None = None
+    template: str | None = None
+    license: str | list[str] | None = None
+    system: str | None = None
+    parameters: dict[str, Any] | None = None
+    messages: list[dict[str, Any]] | None = None
+    modelfile: str | None = None
+    quantize: str | None = None
+    stream: bool = True
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ShowRequest(BaseModel):
+    model: str
+    verbose: bool = False
+
+
+class CopyRequest(BaseModel):
+    source: str
+    destination: str
+
+
+class DeleteRequest(BaseModel):
+    model: str
+
+
+class PushRequest(BaseModel):
+    model: str
+    insecure: bool = False
+    stream: bool = True
 
 
 class KeepAliveUpdate(BaseModel):
+    model: str
+    keep_alive: int | float | str | None = None
+
+
+class UnloadRequest(BaseModel):
     model: str
     keep_alive: int | float | str | None = None

@@ -9,7 +9,6 @@ from typing import Any
 
 import httpx
 
-
 LOGGER = logging.getLogger(__name__)
 
 HF_API_URL = "https://huggingface.co/api/models"

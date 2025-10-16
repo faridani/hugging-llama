@@ -156,6 +156,10 @@ class DummyManager:
         self.generation_outputs: list[str] = ["hello", " world", "!"]
         self.embed_vector = [0.1, 0.2, 0.3]
         self.cache_dir = MOCK_CACHE_DIR
+        self.aliases: dict[str, dict[str, Any]] = {}
+        self.blobs: dict[str, bytes] = {}
+        self.keep_alive_updates: dict[str, float | None] = {}
+        self.unloaded: list[str] = []
 
     async def ensure_model(self, name: str, options: Any, ttl: Any) -> Any:
         return types.SimpleNamespace(
@@ -191,6 +195,70 @@ class DummyManager:
 
     async def pull(self, name: str, revision: str, trust_remote_code: bool) -> Path:
         return MOCK_CACHE_DIR
+
+    def create_alias(
+        self,
+        name: str,
+        base_model: str | None,
+        template: str | None,
+        system: str | None,
+        parameters: dict[str, Any] | None,
+        modelfile: str | None,
+        license_info: list[str] | str | None,
+        messages: list[dict[str, Any]] | None,
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        alias = {
+            "name": name,
+            "model": base_model or name,
+            "template": template,
+            "system": system,
+            "options": parameters or {},
+            "modelfile": modelfile,
+            "license": license_info,
+            "messages": messages,
+            "metadata": metadata or {},
+            "details": {},
+            "modified_at": "now",
+        }
+        self.aliases[name] = alias
+        return alias
+
+    def get_alias(self, name: str) -> dict[str, Any] | None:
+        return self.aliases.get(name)
+
+    def list_alias_records(self) -> list[dict[str, Any]]:
+        return [dict(alias, digest="dummy", size=0) for alias in self.aliases.values()]
+
+    def describe_model(self, name: str) -> dict[str, Any] | None:
+        alias = self.aliases.get(name)
+        if alias is None:
+            return None
+        return dict(alias, parameters=alias.get("options", {}))
+
+    def copy_model(self, source: str, destination: str) -> bool:
+        if source not in self.aliases:
+            return False
+        self.aliases[destination] = dict(self.aliases[source], name=destination)
+        return True
+
+    def delete_model(self, name: str) -> bool:
+        return self.aliases.pop(name, None) is not None
+
+    def blob_exists(self, digest: str) -> bool:
+        return digest in self.blobs
+
+    def save_blob(self, digest: str, data: bytes) -> Path:
+        if not data:
+            raise ValueError("Empty payload is not allowed")
+        self.blobs[digest] = data
+        return MOCK_CACHE_DIR
+
+    async def unload(self, name: str) -> None:
+        self.unloaded.append(name)
+
+    async def set_keep_alive(self, name: str, ttl: float | None) -> None:
+        self.keep_alive_updates[name] = ttl
 
 
 def fake_run_generation(
