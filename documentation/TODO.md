@@ -1,7 +1,7 @@
 # TODO
 
 # P0
-- [*] hugging-llama catalog --memory 24GB does not pull all of the models  
+- [x] hugging-llama catalog --memory 24GB does not pull all of the models  
 - [ ] There is a problem with the `pull` command on Windows. It shows `pulling manifest` but it does not appear to be working on Win 11 
       
 # P2
