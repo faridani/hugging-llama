@@ -27,6 +27,8 @@ dev = [
   "pre-commit",
   "pytest",
   "ruff",
+  "coverage",
+  "coverage-badge",
   "types-jsonschema",
 ]
 
