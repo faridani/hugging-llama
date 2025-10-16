@@ -71,7 +71,8 @@ def _detect_gpu_memory_bytes() -> int | None:
     for idx in range(device_count):
         try:
             props = torch.cuda.get_device_properties(idx)
-        except Exception:  # pragma: no cover - continue if a device query fails
+        except Exception as exc:  # pragma: no cover - continue if a device query fails
+            LOGGER.debug("Failed to query CUDA device %s: %s", idx, exc)
             continue
         total_memory = max(total_memory, int(getattr(props, "total_memory", 0)))
     return total_memory or None
@@ -137,7 +138,11 @@ def _format_catalog_table(entries: list[CatalogEntry]) -> str:
         f"{'-' * vram_width}  "
         f"{'-' * precision_width}  {'-' * len('DESCRIPTION')}"
     )
-    for entry, vram in zip(entries, vram_strings, strict=True):
+    if len(entries) != len(vram_strings):
+        msg = "Catalog entries and VRAM strings must be the same length"
+        raise RuntimeError(msg)
+    for index, entry in enumerate(entries):
+        vram = vram_strings[index]
         lines.append(
             f"{entry.name:{name_width}}  "
             f"{entry.parameters:>{params_width}}  "

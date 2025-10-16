@@ -11,6 +11,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from numbers import Real
 from typing import Any
 
 import torch
@@ -47,7 +48,7 @@ def parse_keep_alive(value: Any | None) -> float | None:
         return None
     if value in {0, "0", "0s"}:
         return 0.0
-    if isinstance(value, (int, float)):
+    if isinstance(value, Real):
         if value < 0:
             return None
         return float(value)

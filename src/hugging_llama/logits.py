@@ -24,7 +24,11 @@ class PresenceFrequencyPenaltyProcessor(LogitsProcessor):
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         if self.presence_penalty == 0 and self.frequency_penalty == 0:
             return scores
-        for batch_idx, (sequence, prompt_len) in enumerate(zip(input_ids, self.prompt_lengths)):
+        if len(input_ids) != len(self.prompt_lengths):
+            msg = "Input ids and prompt lengths must be the same length"
+            raise RuntimeError(msg)
+        for batch_idx, sequence in enumerate(input_ids):
+            prompt_len = self.prompt_lengths[batch_idx]
             if sequence.size(0) <= prompt_len:
                 continue
             generated = sequence[prompt_len:]
