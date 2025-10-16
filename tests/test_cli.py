@@ -84,3 +84,30 @@ def test_catalog_uses_detected_vram(monkeypatch: pytest.MonkeyPatch, capsys: pyt
     assert exit_code == 0
     assert "Detected approximately 12.0 GB" in captured.out
     assert "mistralai/Mistral-7B-Instruct-v0.2" not in captured.out
+
+
+def test_serve_command_invokes_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
+    cli = reload_cli_module()
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app: object, host: str, port: int) -> None:
+        captured.update({"app": app, "host": host, "port": port})
+
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+    monkeypatch.setattr("hugging_llama.server.create_app", lambda **kwargs: "APP")
+
+    exit_code = cli.main([
+        "serve",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "12345",
+        "--max-resident-models",
+        "3",
+        "--model-ttl",
+        "10",
+    ])
+
+    assert exit_code == 0
+    assert captured == {"app": "APP", "host": "0.0.0.0", "port": 12345}
