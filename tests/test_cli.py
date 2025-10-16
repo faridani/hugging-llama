@@ -100,7 +100,7 @@ def test_serve_command_invokes_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     exit_code = cli.main([
         "serve",
         "--host",
-        "0.0.0.0",
+        "127.0.0.1",
         "--port",
         "12345",
         "--max-resident-models",
@@ -110,4 +110,4 @@ def test_serve_command_invokes_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     ])
 
     assert exit_code == 0
-    assert captured == {"app": "APP", "host": "0.0.0.0", "port": 12345}
+    assert captured == {"app": "APP", "host": "127.0.0.1", "port": 12345}

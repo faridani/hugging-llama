@@ -16,7 +16,7 @@ class _FakeTensor:
     def __init__(self, data: list[int]) -> None:
         self.data = data
 
-    def to(self, device: str) -> "_FakeTensor":
+    def to(self, device: str) -> _FakeTensor:
         del device
         return self
 
@@ -25,7 +25,7 @@ class _FakeTensor:
             raise ValueError("_FakeTensor only supports dim=0")
         return len(self.data)
 
-    def __getitem__(self, index: int) -> "_FakeTensor":
+    def __getitem__(self, index: int) -> _FakeTensor:
         if index != 0:
             raise IndexError(index)
         return _FakeTensor(self.data)
