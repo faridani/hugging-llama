@@ -10,7 +10,7 @@ Hugging Llama provides a fully local, Ollama-compatible runtime built on top of 
 [![Ruff Lint](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-lint.yml)
 [![Python Type Check](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml/badge.svg?branch=main)](https://github.com/faridani/hugging-llama/actions/workflows/python-typecheck.yml)
 [![Docker Build](https://github.com/faridani/hugging-llama/actions/workflows/docker-build.yml/badge.svg)](https://github.com/faridani/hugging-llama/actions/workflows/docker-build.yml)
-
+[![End-to-end tests CI](https://github.com/faridani/hugging-llama/actions/workflows/ci.yml/badge.svg)](https://github.com/faridani/hugging-llama/actions/workflows/ci.yml)
 ## Features
 
 - **API Compatibility** – Implements Ollama's endpoints with Hugging Face models:
