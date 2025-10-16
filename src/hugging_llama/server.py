@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -383,8 +384,8 @@ def build_format_validator(format_option: Any | None) -> Callable[[str], None] |
 
         return validator
     if isinstance(format_option, dict):
-        import jsonschema
-
+        jsonschema_module = cast(Any, importlib.import_module("jsonschema"))
+        validate = cast(Callable[[Any, Any], None], jsonschema_module.validate)
         schema = format_option
 
         def validator(text: str) -> None:
@@ -392,7 +393,7 @@ def build_format_validator(format_option: Any | None) -> Callable[[str], None] |
                 data = json.loads(text)
             except json.JSONDecodeError as exc:
                 raise HTTPException(status_code=400, detail=f"Model output is not valid JSON: {exc}") from exc
-            jsonschema.validate(data, schema)
+            validate(data, schema)
 
         return validator
     raise HTTPException(status_code=400, detail="Unsupported format option")
