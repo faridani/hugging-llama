@@ -92,9 +92,35 @@ class ChatRequest(BaseModel):
 
 class EmbeddingsRequest(BaseModel):
     model: str
-    input: str | Sequence[str]
+    input: str | Sequence[str] | None = None
+    prompt: str | None = None
     options: dict[str, Any] | None = None
     keep_alive: int | float | str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_prompt(cls, values: dict[str, Any]) -> dict[str, Any]:
+        if values.get("input") is None and values.get("prompt") is not None:
+            values = dict(values)
+            values["input"] = values.get("prompt")
+        return values
+
+    @model_validator(mode="after")
+    def _ensure_input(self) -> EmbeddingsRequest:
+        if self.input is None:
+            raise ValueError("Embeddings request requires an input or prompt field")
+        return self
+
+    @property
+    def normalized_inputs(self) -> list[str]:
+        if (
+            isinstance(self.input, Sequence)
+            and not isinstance(self.input, str)
+            and not isinstance(self.input, bytes)
+            and not isinstance(self.input, bytearray)
+        ):
+            return [str(item) for item in self.input]
+        return [str(self.input)]
 
 
 class PullRequest(BaseModel):
@@ -117,9 +143,21 @@ class CreateRequest(BaseModel):
     messages: list[dict[str, Any]] | None = None
     modelfile: str | None = None
     quantize: str | None = None
+    metadata: dict[str, Any] | None = None
     stream: bool = True
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class EditRequest(BaseModel):
+    model: str
+    template: str | None = None
+    system: str | None = None
+    parameters: dict[str, Any] | None = None
+    license: list[str] | str | None = None
+    messages: list[dict[str, Any]] | None = None
+    modelfile: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class ShowRequest(BaseModel):

@@ -99,3 +99,73 @@ def test_embeddings_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         assert snapshot_after["actual"].ref_count == 0
 
     asyncio.run(scenario())
+
+
+def test_modelfile_persistence(tmp_path: Path) -> None:
+    manager = ModelManager(tmp_path, max_resident_models=1)
+    text = "FROM base\nPARAMETER temperature 0.5"
+    manager.create_alias(
+        "alias",
+        base_model="base",
+        template=None,
+        system=None,
+        parameters={"temperature": 0.5},
+        modelfile=text,
+        license_info=None,
+        messages=None,
+        metadata={"description": "Alias", "prompt_aliases": {"hello": "Hello"}},
+    )
+    path = manager._modelfile_path("alias")  # noqa: SLF001
+    assert path.exists()
+    stored = path.read_text(encoding="utf-8")
+    assert "FROM base" in stored
+    assert "PARAMETER temperature 0.5" in stored
+
+    manager.create_alias(
+        "alias",
+        base_model="base",
+        template="{{prompt}}",
+        system="system",
+        parameters={"temperature": 0.5},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata={"description": "Alias", "prompt_aliases": {"hello": "Hello"}},
+    )
+    rebuilt = path.read_text(encoding="utf-8")
+    assert "FROM base" in rebuilt
+    assert "METADATA" in rebuilt
+
+
+def test_get_prompt_aliases_includes_defaults(tmp_path: Path) -> None:
+    manager = ModelManager(tmp_path, max_resident_models=1)
+    manager.create_alias(
+        "alias",
+        base_model="base",
+        template=None,
+        system=None,
+        parameters={},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata={"description": "Alias", "prompt_aliases": {"hello": "Hello"}},
+    )
+    aliases = manager.get_prompt_aliases("alias")
+    assert "default" in aliases
+    assert aliases["hello"] == "Hello"
+
+
+def test_create_alias_rejects_invalid_metadata(tmp_path: Path) -> None:
+    manager = ModelManager(tmp_path, max_resident_models=1)
+    with pytest.raises(ValueError):
+        manager.create_alias(
+            "alias",
+            base_model="base",
+            template=None,
+            system=None,
+            parameters={},
+            modelfile=None,
+            license_info=None,
+            messages=None,
+            metadata={"description": 1},
+        )
