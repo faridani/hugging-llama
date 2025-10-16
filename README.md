@@ -92,7 +92,7 @@ curl -sS http://127.0.0.1:11434/api/generate -H 'Content-Type: application/json'
 ```
 
 
-Windows PowerShell
+Windows PowerShell (we recommend using WLS on Windows instead of the native PowerShell)
 ```powershell
 Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/generate' -Method 'POST' -Headers @{'Content-Type'='application/json'} -Body '{"model":"hf-internal-testing/tiny-random-gpt2","prompt":"Hello","stream":false}'
 ```
