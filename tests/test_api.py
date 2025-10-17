@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,32 @@ def test_chat_endpoint_tool_call(client, dummy_manager):
     assert res.status_code == 200
     body = res.json()
     assert body["message"]["tool_calls"] == [{"id": "call1", "function": {"name": "ping", "arguments": "{}"}}]
+
+
+def test_chat_endpoint_without_chat_template(
+    client, dummy_manager, monkeypatch: pytest.MonkeyPatch
+):
+    dummy_manager.generation_outputs = ["hello"]
+
+    original_ensure = dummy_manager.ensure_model
+
+    async def ensure_model_without_template(name: str, options: Any, ttl: Any) -> Any:
+        result = await original_ensure(name, options, ttl)
+
+        def raise_missing_template(*args: Any, **kwargs: Any) -> str:
+            raise ValueError("missing chat template")
+
+        result.tokenizer.apply_chat_template = raise_missing_template  # type: ignore[attr-defined]
+        return result
+
+    monkeypatch.setattr(dummy_manager, "ensure_model", ensure_model_without_template)
+
+    res = client.post(
+        "/api/chat",
+        json={"model": "stub", "messages": [{"role": "user", "content": "Hello"}], "stream": False},
+    )
+    assert res.status_code == 200
+    assert res.json()["message"]["content"] == "hello"
 
 
 def test_embedding_endpoint(client, dummy_manager):

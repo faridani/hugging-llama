@@ -272,12 +272,20 @@ def create_app(
         template_kwargs: dict[str, Any] = {}
         if request.tools:
             template_kwargs["tools"] = [tool.model_dump() for tool in request.tools]
-        prompt = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=False,
-            **template_kwargs,
-        )
+        try:
+            prompt = tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=False,
+                **template_kwargs,
+            )
+        except (AttributeError, KeyError, NotImplementedError, TypeError, ValueError) as exc:
+            LOGGER.warning(
+                "Falling back to default chat prompt for model '%s': %s",
+                request.model,
+                exc,
+            )
+            prompt = build_fallback_chat_prompt(messages)
         await manager.release(request.model, ttl)
 
         generate_request = GenerateRequest(
@@ -682,6 +690,36 @@ def build_prompt(request: GenerateRequest) -> str:
     if request.system:
         return f"{request.system}\n\n{request.prompt}"
     return request.prompt
+
+
+def _stringify_chat_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            parts.append(_stringify_chat_content(item))
+        return "\n".join(part for part in parts if part)
+    if isinstance(content, dict):
+        if "text" in content:
+            return _stringify_chat_content(content["text"])
+        return json.dumps(content, ensure_ascii=False)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def build_fallback_chat_prompt(messages: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for entry in messages:
+        role = entry.get("role", "user")
+        rendered_content = _stringify_chat_content(entry.get("content"))
+        if rendered_content:
+            lines.append(f"{role}: {rendered_content}")
+        else:
+            lines.append(f"{role}:")
+    lines.append("assistant:")
+    return "\n".join(lines)
 
 
 def format_generate_chunk(request: GenerateRequest, text: str, done: bool, timing: TimingInfo) -> dict[str, Any]:
