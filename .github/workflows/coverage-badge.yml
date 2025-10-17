@@ -33,7 +33,7 @@ jobs:
         run: |
           coverage run -m pytest
           coverage xml
-          coverage-badge -o documentation/badges/coverage.svg
+          coverage-badge -f -o documentation/badges/coverage.svg
 
       - name: Commit coverage badge
         run: |
