@@ -15,11 +15,11 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, cast
 
+import torch
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
-import torch
 from transformers import TextIteratorStreamer
 
 from .api_types import (
