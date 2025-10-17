@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from hugging_llama.api_types import PullRequest
+
 
 def test_openwebui_create_and_show(client, dummy_manager):
     modelfile = "FROM stub\nPARAMETER temperature 0.3"
@@ -96,3 +98,9 @@ def test_openwebui_unload(client, dummy_manager):
     res = client.post("/api/unload", json={"model": "stub"})
     assert res.status_code == 200
     assert dummy_manager.unloaded == ["stub"]
+
+
+def test_pull_request_alias_from_bytes_payload():
+    body = json.dumps({"name": "alias"}).encode()
+    request = PullRequest.model_validate_json(body)
+    assert request.model == "alias"
