@@ -38,6 +38,18 @@ LOGGER = logging.getLogger(__name__)
 
 MODEL_LOCKS: dict[str, asyncio.Lock] = {}
 
+
+def _split_model_tag(name: str) -> tuple[str, str | None]:
+    """Split an Ollama style ``name:tag`` identifier.
+
+    Ollama exposes model references with optional ``:<tag>`` suffixes.  Hugging Face
+    repositories use ``@revision`` instead, so we normalise names by splitting on the
+    first colon.  The helper returns the base repository name and the optional tag.
+    """
+
+    base, sep, tag = name.partition(":")
+    return (base if sep else name, tag if sep else None)
+
 _SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE = (
     "trust_remote_code" in inspect.signature(snapshot_download).parameters
 )
@@ -144,6 +156,10 @@ class ModelManager:
     def get_prompt_aliases(self, name: str) -> dict[str, str]:
         aliases: dict[str, str] = dict(self.predefined_prompt_aliases)
         alias_info = self.aliases.get(name)
+        if alias_info is None:
+            base_name, tag = _split_model_tag(name)
+            if tag:
+                alias_info = self.aliases.get(base_name)
         if alias_info:
             base_model = alias_info.get("model")
             if isinstance(base_model, str) and base_model and base_model != name:
@@ -230,8 +246,20 @@ class ModelManager:
 
     def describe_model(self, name: str) -> dict[str, Any] | None:
         alias = self.aliases.get(name)
-        alias_model = alias.get("model") if alias else None
-        base_name = alias_model if isinstance(alias_model, str) and alias_model else name
+        base_name = name
+        if alias:
+            alias_model = alias.get("model")
+            if isinstance(alias_model, str) and alias_model:
+                base_name = alias_model
+        else:
+            split_name, tag = _split_model_tag(name)
+            base_name = split_name
+            if tag:
+                alias = self.aliases.get(split_name)
+                if alias:
+                    alias_model = alias.get("model")
+                    if isinstance(alias_model, str) and alias_model:
+                        base_name = alias_model
         repo_dir = self.cache_dir / base_name.replace("/", "__")
         details = alias.get("details") if alias else {}
         info: dict[str, Any] = {
@@ -324,7 +352,17 @@ class ModelManager:
         return path
 
     def resolve_model(self, name: str) -> tuple[str, dict[str, Any]]:
-        info = self.aliases.get(name, {"model": name, "options": {}})
+        info = self.aliases.get(name)
+        if info is None:
+            base_name, tag = _split_model_tag(name)
+            if tag:
+                info = self.aliases.get(base_name)
+                if info is None:
+                    return base_name, {}
+                model_name = info.get("model", base_name)
+                options = info.get("options", {})
+                return model_name, options
+            return base_name, {}
         model_name = info.get("model", name)
         options = info.get("options", {})
         return model_name, options
@@ -417,29 +455,39 @@ class ModelManager:
             await self.models.evict_expired()
 
     async def pull(self, name: str, revision: str | None, trust_remote_code: bool) -> Path:
-        repo_dir = self.cache_dir / name.replace("/", "__")
+        base_name, tag = _split_model_tag(name)
+        repo_dir = self.cache_dir / base_name.replace("/", "__")
         repo_dir.mkdir(parents=True, exist_ok=True)
 
         def _download() -> Path:
             download_fn = cast(Callable[..., Any], snapshot_download)
+            kwargs: dict[str, Any] = {
+                "local_dir": repo_dir,
+                "local_dir_use_symlinks": False,
+            }
+            effective_revision = revision or tag
+            if effective_revision:
+                kwargs["revision"] = effective_revision
             if _SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE and trust_remote_code:
                 download_fn(
-                    name,
-                    revision=revision,
-                    local_dir=repo_dir,
-                    local_dir_use_symlinks=False,
+                    base_name,
                     trust_remote_code=True,
+                    **kwargs,
                 )
             else:
                 download_fn(
-                    name,
-                    revision=revision,
-                    local_dir=repo_dir,
-                    local_dir_use_symlinks=False,
+                    base_name,
+                    **kwargs,
                 )
             return repo_dir
 
-        return await asyncio.get_running_loop().run_in_executor(None, _download)
+        path = await asyncio.get_running_loop().run_in_executor(None, _download)
+        if tag:
+            try:
+                self.create_alias(name, base_name, None, None, {}, None, None, None, None)
+            except ValueError:
+                LOGGER.debug("Skipping alias creation for %s due to validation error", name)
+        return path
 
     async def ensure_embeddings_model(self, name: str, ttl: float | None) -> ManagedModel:
         resolved_name, _ = self.resolve_model(name)

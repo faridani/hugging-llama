@@ -67,6 +67,29 @@ def test_pull_handles_missing_trust_remote_code(monkeypatch: pytest.MonkeyPatch,
     asyncio.run(scenario())
 
 
+def test_pull_with_tag_creates_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = ModelManager(tmp_path, max_resident_models=1)
+
+        recorded: dict[str, Any] = {}
+
+        def fake_snapshot_download(name: str, **kwargs: Any) -> None:
+            recorded["name"] = name
+            recorded["kwargs"] = kwargs
+
+        monkeypatch.setattr(model_manager_module, "snapshot_download", fake_snapshot_download)
+
+        path = await manager.pull("some/model:beta", revision=None, trust_remote_code=False)
+        assert path == tmp_path / "some__model"
+        assert recorded["name"] == "some/model"
+        assert recorded["kwargs"]["revision"] == "beta"
+        assert recorded["kwargs"]["local_dir"] == tmp_path / "some__model"
+        assert "some/model:beta" in manager.aliases
+        assert manager.aliases["some/model:beta"]["model"] == "some/model"
+
+    asyncio.run(scenario())
+
+
 def test_embeddings_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def scenario() -> None:
         manager = ModelManager(tmp_path, max_resident_models=1)
@@ -99,6 +122,25 @@ def test_embeddings_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         assert snapshot_after["actual"].ref_count == 0
 
     asyncio.run(scenario())
+
+
+def test_resolve_model_with_tag_uses_base_alias(tmp_path: Path) -> None:
+    manager = ModelManager(tmp_path, max_resident_models=1)
+    manager.create_alias(
+        "some/model",
+        base_model="actual/model",
+        template=None,
+        system=None,
+        parameters={"temperature": 0.2},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata=None,
+    )
+
+    resolved, options = manager.resolve_model("some/model:beta")
+    assert resolved == "actual/model"
+    assert options == {"temperature": 0.2}
 
 
 def test_modelfile_persistence(tmp_path: Path) -> None:
