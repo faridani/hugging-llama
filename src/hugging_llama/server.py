@@ -337,14 +337,19 @@ def create_app(
     @app.get("/api/tags")
     async def list_tags() -> dict[str, Any]:
         models = []
-        for path in sorted(manager.cache_dir.glob("**/config.json")):
-            stat = path.stat()
-            model_dir = path.parent
-            size = sum(p.stat().st_size for p in model_dir.rglob("*"))
+        for model_name, repo_dir, config_path in manager.iter_local_models():
+            try:
+                stat = config_path.stat()
+            except OSError:
+                continue
+            try:
+                size = sum(p.stat().st_size for p in repo_dir.rglob("*") if p.is_file())
+            except OSError:
+                size = 0
             models.append(
                 {
-                    "name": model_dir.name.replace("__", "/"),
-                    "model": model_dir.name.replace("__", "/"),
+                    "name": model_name,
+                    "model": model_name,
                     "modified_at": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z",
                     "size": size,
                     "digest": str(stat.st_mtime_ns),
