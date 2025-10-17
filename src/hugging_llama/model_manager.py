@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import shutil
+from copy import deepcopy
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -483,8 +484,36 @@ class ModelManager:
 
         path = await asyncio.get_running_loop().run_in_executor(None, _download)
         if tag:
+            base_alias = self.aliases.get(base_name)
+            parameters: dict[str, Any] | None = None
+            template: str | None = None
+            system: str | None = None
+            modelfile: str | None = None
+            license_info: list[str] | str | None = None
+            messages: list[dict[str, Any]] | None = None
+            metadata: dict[str, Any] | None = None
+            if base_alias:
+                parameters = dict(base_alias.get("options") or {})
+                template = base_alias.get("template")
+                system = base_alias.get("system")
+                modelfile = base_alias.get("modelfile")
+                license_info = base_alias.get("license")
+                messages = base_alias.get("messages")
+                base_metadata = base_alias.get("metadata")
+                if base_metadata:
+                    metadata = deepcopy(base_metadata)
             try:
-                self.create_alias(name, base_name, None, None, {}, None, None, None, None)
+                self.create_alias(
+                    name,
+                    base_name,
+                    template,
+                    system,
+                    parameters,
+                    modelfile,
+                    license_info,
+                    messages,
+                    metadata,
+                )
             except ValueError:
                 LOGGER.debug("Skipping alias creation for %s due to validation error", name)
         return path
