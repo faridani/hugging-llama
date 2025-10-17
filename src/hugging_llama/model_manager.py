@@ -8,7 +8,7 @@ import json
 import logging
 import math
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -50,6 +50,46 @@ def _split_model_tag(name: str) -> tuple[str, str | None]:
 
     base, sep, tag = name.partition(":")
     return (base if sep else name, tag if sep else None)
+
+
+def _resolve_local_model_dir(repo_dir: Path) -> Path | None:
+    """Return the directory containing ``config.json`` for a downloaded snapshot.
+
+    Hugging Face's ``snapshot_download`` writes files under ``snapshots/<rev>`` by
+    default, so we inspect both the repository root and any snapshot directories
+    to locate the actual model payload.
+    """
+
+    direct_config = repo_dir / "config.json"
+    if direct_config.exists():
+        return repo_dir
+
+    candidates: list[tuple[float, Path]] = []
+
+    snapshots_dir = repo_dir / "snapshots"
+    if snapshots_dir.exists():
+        for path in snapshots_dir.glob("*/config.json"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            candidates.append((stat.st_mtime, path.parent))
+
+    if not candidates:
+        for path in repo_dir.glob("**/config.json"):
+            if path.parent == repo_dir:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            candidates.append((stat.st_mtime, path.parent))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 _SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE = (
     "trust_remote_code" in inspect.signature(snapshot_download).parameters
@@ -368,6 +408,19 @@ class ModelManager:
         options = info.get("options", {})
         return model_name, options
 
+    def iter_local_models(self) -> Iterator[tuple[str, Path, Path]]:
+        for entry in sorted(self.cache_dir.iterdir()):
+            if not entry.is_dir() or entry.name.startswith("_"):
+                continue
+            model_name = entry.name.replace("__", "/")
+            local_dir = _resolve_local_model_dir(entry)
+            if local_dir is None:
+                continue
+            config_path = local_dir / "config.json"
+            if not config_path.exists():
+                continue
+            yield model_name, entry, config_path
+
     async def ensure_model(self, name: str, options: GenerateOptions | None, ttl: float | None) -> ManagedModel:
         resolved_name, alias_options = self.resolve_model(name)
         merged_options = {}
@@ -405,8 +458,10 @@ class ModelManager:
             load_kwargs["trust_remote_code"] = True
         repo_dir = self.cache_dir / name.replace("/", "__")
         repo_dir.mkdir(parents=True, exist_ok=True)
-        model = AutoModelForCausalLM.from_pretrained(repo_dir if any(repo_dir.iterdir()) else name, **load_kwargs)
-        tokenizer = AutoTokenizer.from_pretrained(repo_dir if any(repo_dir.iterdir()) else name, use_fast=True)
+        local_dir = _resolve_local_model_dir(repo_dir)
+        load_target = local_dir or (repo_dir if any(repo_dir.iterdir()) else name)
+        model = AutoModelForCausalLM.from_pretrained(load_target, **load_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(load_target, use_fast=True)
         tokenizer.padding_side = "left"
         tokenizer.truncation_side = "left"
         managed = ManagedModel(
@@ -540,7 +595,9 @@ class ModelManager:
 
         repo_dir = self.cache_dir / name.replace("/", "__")
         repo_dir.mkdir(parents=True, exist_ok=True)
-        model = SentenceTransformer(str(repo_dir if any(repo_dir.iterdir()) else name))
+        local_dir = _resolve_local_model_dir(repo_dir)
+        load_target = local_dir or (repo_dir if any(repo_dir.iterdir()) else name)
+        model = SentenceTransformer(str(load_target))
         managed = ManagedModel(
             model=model,
             tokenizer=None,

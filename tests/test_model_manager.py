@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -211,3 +212,59 @@ def test_create_alias_rejects_invalid_metadata(tmp_path: Path) -> None:
             messages=None,
             metadata={"description": 1},
         )
+
+
+def test_iter_local_models_detects_snapshot(tmp_path: Path) -> None:
+    manager = ModelManager(tmp_path, max_resident_models=1)
+    repo_dir = tmp_path / "openai__gpt-oss-20b"
+    snapshot_dir = repo_dir / "snapshots" / "abcdef"
+    snapshot_dir.mkdir(parents=True)
+    (snapshot_dir / "config.json").write_text("{}", encoding="utf-8")
+
+    discovered = list(manager.iter_local_models())
+    assert discovered
+    name, base_dir, config_path = discovered[0]
+    assert name == "openai/gpt-oss-20b"
+    assert base_dir == repo_dir
+    assert config_path.parent == snapshot_dir
+
+
+def test_load_text_model_prefers_snapshot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    manager = ModelManager(tmp_path, max_resident_models=1)
+    repo_dir = tmp_path / "openai__gpt-oss-20b"
+    snapshot_dir = repo_dir / "snapshots" / "123456"
+    snapshot_dir.mkdir(parents=True)
+    (snapshot_dir / "config.json").write_text("{}", encoding="utf-8")
+
+    load_paths: dict[str, Path] = {}
+
+    class DummyAutoModel:
+        def __init__(self) -> None:
+            self.device = "cpu"
+            self.config = types.SimpleNamespace(model_type="causal", num_parameters=None)
+
+        @classmethod
+        def from_pretrained(cls, path: Path | str, **kwargs: Any) -> DummyAutoModel:
+            load_paths["model"] = Path(path)
+            return cls()
+
+        def cpu(self) -> None:  # pragma: no cover - defensive no-op
+            return None
+
+    class DummyTokenizer:
+        def __init__(self) -> None:
+            self.padding_side = "left"
+            self.truncation_side = "left"
+
+        @classmethod
+        def from_pretrained(cls, path: Path | str, **kwargs: Any) -> DummyTokenizer:
+            load_paths["tokenizer"] = Path(path)
+            return cls()
+
+    monkeypatch.setattr(model_manager_module, "AutoModelForCausalLM", DummyAutoModel)
+    monkeypatch.setattr(model_manager_module, "AutoTokenizer", DummyTokenizer)
+
+    managed = manager._load_text_model("openai/gpt-oss-20b", {})
+    assert load_paths["model"] == snapshot_dir
+    assert load_paths["tokenizer"] == snapshot_dir
+    assert managed.path == repo_dir

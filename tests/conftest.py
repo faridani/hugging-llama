@@ -178,6 +178,9 @@ class DummyManager:
     async def release(self, name: str, ttl: Any) -> None:
         return None
 
+    def iter_local_models(self) -> Iterable[tuple[str, Path, Path]]:
+        return iter(())
+
     async def ensure_embeddings_model(self, name: str, ttl: Any) -> Any:
         vector = self.embed_vector
 
