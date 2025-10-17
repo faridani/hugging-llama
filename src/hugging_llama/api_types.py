@@ -130,6 +130,16 @@ class PullRequest(BaseModel):
     insecure: bool = False
     stream: bool = True
 
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_model(cls, values: dict[str, Any]) -> dict[str, Any]:
+        if "model" not in values and values.get("name") is not None:
+            values = dict(values)
+            values["model"] = values["name"]
+        return values
+
 
 class CreateRequest(BaseModel):
     model: str
