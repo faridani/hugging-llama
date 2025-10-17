@@ -115,6 +115,9 @@ docker build -t hugging-llama .
 docker run -it --rm -p 11434:11434 hugging-llama
 ```
 
+## Setting up Open WebUI
+You need to run OpenWebUI in docker and after launching it use the docker's local host instead of 0.0.0.0 ip. ie: `http://host.docker.internal:11434`
+
 ## License
 
 Apache 2.0 (see [LICENSE](LICENSE)).
