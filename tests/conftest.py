@@ -107,7 +107,11 @@ class FakeTokenizer:
         add_special_tokens: bool = True,
     ) -> dict[str, FakeTensor]:
         tokens = list(range(len(text.split()))) or [0]
-        return {"input_ids": FakeTensor(tokens)}
+        mask = [1] * len(tokens)
+        return {
+            "input_ids": FakeTensor(tokens),
+            "attention_mask": FakeTensor(mask),
+        }
 
     def apply_chat_template(
         self,
@@ -285,12 +289,13 @@ def fake_run_generation(
     manager: Any,
     request_options: Any,
     input_ids: Any,
+    attention_mask: Any,
     tokenizer: Any,
     model: Any,
     prompt_text: str,
     streamer: Any,
 ) -> dict[str, Any]:
-    del manager, request_options, input_ids, tokenizer, prompt_text
+    del manager, request_options, input_ids, attention_mask, tokenizer, prompt_text
     for chunk in model.outputs:
         streamer.feed(chunk)
     streamer.end()

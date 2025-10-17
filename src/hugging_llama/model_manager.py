@@ -483,6 +483,7 @@ def run_generation(
     manager: ModelManager,
     request_options: GenerateOptions,
     input_ids: torch.LongTensor,
+    attention_mask: torch.LongTensor,
     tokenizer,
     model,
     prompt_text: str,
@@ -491,6 +492,7 @@ def run_generation(
     prompt_tokens = len(tokenizer(prompt_text, return_tensors="pt")["input_ids"][0])
     generation_kwargs: dict[str, Any] = {
         "input_ids": input_ids.to(model.device),
+        "attention_mask": attention_mask.to(model.device),
         "streamer": streamer,
     }
     if request_options.max_tokens is not None:

@@ -41,7 +41,11 @@ class _FakeTokenizer:
     ) -> dict[str, _FakeTensor]:
         del return_tensors, add_special_tokens
         tokens = list(range(len(text.split()))) or [0]
-        return {"input_ids": _FakeTensor(tokens)}
+        mask = [1] * len(tokens)
+        return {
+            "input_ids": _FakeTensor(tokens),
+            "attention_mask": _FakeTensor(mask),
+        }
 
     def apply_chat_template(self, *args: Any, **kwargs: Any) -> str:
         raise RuntimeError("chat templates not required in tests")
