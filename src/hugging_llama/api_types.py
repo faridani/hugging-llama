@@ -136,7 +136,7 @@ class PullRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_model(cls, values: Any) -> Any:
-        if isinstance(values, (bytes, bytearray)):
+        if isinstance(values, bytes | bytearray):
             try:
                 values = json.loads(values)
             except json.JSONDecodeError:
