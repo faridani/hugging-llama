@@ -202,6 +202,12 @@ def test_pull_endpoint(client):
     assert events[-1]["status"] == "success"
 
 
+def test_pull_endpoint_allows_name_alias(client):
+    with client.stream("POST", "/api/pull", json={"name": "stub"}) as response:
+        events = collect_stream(response)
+    assert events[-1]["status"] == "success"
+
+
 def test_tags_endpoint(client):
     res = client.get("/api/tags")
     assert res.status_code == 200
