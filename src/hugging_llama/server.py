@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
+import torch
 from transformers import TextIteratorStreamer
 
 from .api_types import (
@@ -146,6 +147,11 @@ def create_app(
         streamer = TextIteratorStreamer(tokenizer, skip_prompt=True)
         inputs = tokenizer(prompt, return_tensors="pt")
         input_ids = inputs["input_ids"].to(model.model.device)
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+        else:
+            attention_mask = attention_mask.to(model.model.device)
         stop_handler = StopSequenceMatcher(request_options.stop)
         timing = TimingInfo(start_time=time.perf_counter())
         loop = asyncio.get_running_loop()
@@ -156,6 +162,7 @@ def create_app(
                 manager,
                 request_options,
                 input_ids,
+                attention_mask,
                 tokenizer,
                 model.model,
                 prompt,
