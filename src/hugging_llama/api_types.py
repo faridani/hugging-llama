@@ -53,7 +53,7 @@ class GenerateRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_options(cls, values: Any) -> Any:
-        if isinstance(values, (bytes, bytearray)):
+        if isinstance(values, (bytes, bytearray)):  # noqa: UP038
             try:
                 values = json.loads(values)
             except json.JSONDecodeError:
@@ -97,7 +97,7 @@ class ChatRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_options(cls, values: Any) -> Any:
-        if isinstance(values, (bytes, bytearray)):
+        if isinstance(values, (bytes, bytearray)):  # noqa: UP038
             try:
                 values = json.loads(values)
             except json.JSONDecodeError:
@@ -162,7 +162,9 @@ class PullRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_model(cls, values: Any) -> Any:
-        if isinstance(values, bytes | bytearray):
+        # mypy does not currently accept ``bytes | bytearray`` in ``isinstance``
+        # checks, so we keep the tuple form and silence the ``UP038`` lint.
+        if isinstance(values, (bytes, bytearray)):  # noqa: UP038
             try:
                 values = json.loads(values)
             except json.JSONDecodeError:

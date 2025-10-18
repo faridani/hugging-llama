@@ -46,7 +46,7 @@ select = ["E", "F", "I", "B", "UP", "S"]
 per-file-ignores = {"tests/**/*" = ["S101"]}
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.12"
 strict = false
 warn_unused_configs = true
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
