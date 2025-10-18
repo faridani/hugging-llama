@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -288,7 +289,19 @@ def create_app(
         tokenizer = model.tokenizer
         messages = []
         for message in message_objects:
-            entry: dict[str, Any] = {"role": message.role, "content": message.content}
+            entry: dict[str, Any] = {"role": message.role}
+            content: Any = message.content
+            thinking: Any | None = message.thinking
+            if message.role == "assistant" and isinstance(content, str):
+                parsed_thinking, final_content = _finalize_assistant_message(content)
+                if thinking is None and parsed_thinking:
+                    thinking = parsed_thinking
+                content = final_content
+            elif isinstance(content, str):
+                content = _strip_reasoning_markers(content)
+            entry["content"] = content
+            if thinking:
+                entry["thinking"] = thinking
             if message.name:
                 entry["name"] = message.name
             if message.tool_call_id:
@@ -333,24 +346,36 @@ def create_app(
         generate_request = await _prepare_chat_generate_request(request, manager, ttl)
 
         async def translate_stream() -> AsyncGenerator[bytes, None]:
-            collected = ""
+            accumulator = _ReasoningAccumulator()
             stored_tool_calls: list[dict[str, Any]] | None = None
             async for chunk in _stream_generate(generate_request, manager, ttl, format_validator):
                 payload = json.loads(chunk.decode("utf-8"))
                 text = payload.get("response", "")
-                if text:
-                    collected += text
+                delta, sanitized = accumulator.update(text)
+                normalized_for_tools = sanitized.strip()
+                if normalized_for_tools and stored_tool_calls is None:
+                    stored_tool_calls = detect_tool_calls(normalized_for_tools)
                 message_content: dict[str, Any] = {
                     "role": "assistant",
-                    "content": text,
                 }
-                if stored_tool_calls is None:
-                    tool_calls = detect_tool_calls(collected)
-                    if tool_calls is not None:
-                        stored_tool_calls = tool_calls
+                done = bool(payload.get("done"))
+                thinking_text: str | None = None
+                final_text: str | None = None
+                if done:
+                    thinking_text, final_text = accumulator.finalize()
                 if stored_tool_calls is not None:
                     message_content["content"] = ""
                     message_content["tool_calls"] = stored_tool_calls
+                    if thinking_text:
+                        message_content["thinking"] = thinking_text
+                elif done:
+                    if thinking_text:
+                        message_content["thinking"] = thinking_text
+                    message_content["content"] = final_text or ""
+                else:
+                    message_content["content"] = delta
+                    if not message_content["content"]:
+                        continue
                 message_chunk = {
                     "model": request.model,
                     "message": message_content,
@@ -402,32 +427,32 @@ def create_app(
         created = int(time.time())
 
         async def collect_response() -> dict[str, Any]:
-            accumulated = ""
+            accumulator = _ReasoningAccumulator()
             stored_tool_calls: list[dict[str, Any]] | None = None
             final_payload: dict[str, Any] | None = None
             async for chunk in _stream_generate(generate_request, manager, ttl, format_validator):
                 payload = json.loads(chunk.decode("utf-8"))
                 done = bool(payload.get("done"))
                 text = payload.get("response", "")
+                accumulator.update(text)
+                normalized = accumulator.progress.strip()
+                if normalized and stored_tool_calls is None:
+                    stored_tool_calls = detect_tool_calls(normalized)
                 if done:
                     final_payload = payload
-                    full_text = text or accumulated
-                    if stored_tool_calls is None:
-                        stored_tool_calls = detect_tool_calls(full_text)
-                    accumulated = full_text
-                else:
-                    if text:
-                        accumulated += text
-                    if stored_tool_calls is None:
-                        stored_tool_calls = detect_tool_calls(accumulated)
             if final_payload is None:
                 final_payload = {}
+            thinking, final_text = accumulator.finalize()
+            if stored_tool_calls is None and final_text:
+                stored_tool_calls = detect_tool_calls(final_text)
             usage = {
                 "prompt_tokens": int(final_payload.get("prompt_eval_count", 0) or 0),
                 "completion_tokens": int(final_payload.get("eval_count", 0) or 0),
             }
             usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
-            message: dict[str, Any] = {"role": "assistant", "content": accumulated if stored_tool_calls is None else ""}
+            message: dict[str, Any] = {"role": "assistant", "content": final_text if stored_tool_calls is None else ""}
+            if thinking:
+                message["thinking"] = thinking
             if stored_tool_calls is not None:
                 message["tool_calls"] = stored_tool_calls
             finish_reason = "tool_calls" if stored_tool_calls is not None else "stop"
@@ -447,20 +472,20 @@ def create_app(
             }
 
         async def stream_response() -> AsyncGenerator[bytes, None]:
-            accumulated = ""
+            accumulator = _ReasoningAccumulator()
             stored_tool_calls: list[dict[str, Any]] | None = None
             async for chunk in _stream_generate(generate_request, manager, ttl, format_validator):
                 payload = json.loads(chunk.decode("utf-8"))
                 done = bool(payload.get("done"))
                 text = payload.get("response", "")
-                if not done and text:
-                    accumulated += text
-                if not done and stored_tool_calls is None:
-                    stored_tool_calls = detect_tool_calls(accumulated)
+                delta, sanitized = accumulator.update(text)
+                normalized = sanitized.strip()
+                if normalized and stored_tool_calls is None:
+                    stored_tool_calls = detect_tool_calls(normalized)
                 if done:
-                    full_text = text or accumulated
-                    if stored_tool_calls is None:
-                        stored_tool_calls = detect_tool_calls(full_text)
+                    thinking, final_text = accumulator.finalize()
+                    if stored_tool_calls is None and final_text:
+                        stored_tool_calls = detect_tool_calls(final_text)
                     finish_reason = "tool_calls" if stored_tool_calls is not None else "stop"
                     usage = {
                         "prompt_tokens": int(payload.get("prompt_eval_count", 0) or 0),
@@ -484,13 +509,13 @@ def create_app(
                     yield ("data: " + json.dumps(chunk_payload) + "\n\n").encode("utf-8")
                     yield b"data: [DONE]\n\n"
                     continue
-                delta: dict[str, Any] = {}
+                delta_payload: dict[str, Any] = {}
                 if stored_tool_calls is not None:
-                    delta["tool_calls"] = stored_tool_calls
-                    delta.setdefault("content", "")
-                elif text:
-                    delta["content"] = text
-                if not delta:
+                    delta_payload["tool_calls"] = stored_tool_calls
+                    delta_payload.setdefault("content", "")
+                elif delta:
+                    delta_payload["content"] = delta
+                if not delta_payload:
                     continue
                 chunk_payload = {
                     "id": chat_id,
@@ -500,7 +525,7 @@ def create_app(
                     "choices": [
                         {
                             "index": 0,
-                            "delta": delta,
+                            "delta": delta_payload,
                             "finish_reason": None,
                         }
                     ],
@@ -896,6 +921,101 @@ def _stringify_chat_content(content: Any) -> str:
     if content is None:
         return ""
     return str(content)
+
+
+_REASONING_MARKER_RE = re.compile(
+    r"<\|start_header_id\|>assistant|<\|end_header_id\|>|<\|message\|>|<\|end\|>|<\|eot_id\|>|<\|channel\|>[^\r\n]*"
+)
+_CHANNEL_BLOCK_RE = re.compile(r"<\|channel\|>([^\r\n]+)\s*(.*?)(?=(?:<\|channel\|>[^\r\n]+)|$)", re.DOTALL)
+
+
+def _strip_reasoning_markers(text: str) -> str:
+    return _REASONING_MARKER_RE.sub("", text)
+
+
+def _extract_reasoning_segments(text: str) -> tuple[str | None, str] | None:
+    if "<|channel|>" not in text:
+        return None
+    cleaned = text
+    for marker in ("<|start_header_id|>assistant", "<|end_header_id|>", "<|message|>", "<|eot_id|>"):
+        cleaned = cleaned.replace(marker, "")
+    cleaned = cleaned.replace("<|end|>", "")
+    matches = list(_CHANNEL_BLOCK_RE.finditer(cleaned))
+    if not matches:
+        return None
+    sections: dict[str, str] = {}
+    for match in matches:
+        channel = match.group(1).strip().lower()
+        body = match.group(2)
+        sections[channel] = body or ""
+    if not sections:
+        return None
+    thinking: str | None = None
+    for key in ("analysis", "reasoning", "thinking"):
+        value = sections.get(key)
+        if value and value.strip():
+            thinking = value.strip()
+            break
+    final_text = ""
+    for key in ("final", "default", "assistant", "response"):
+        value = sections.get(key)
+        if value is not None:
+            final_text = value
+            break
+    return thinking, final_text
+
+
+def _finalize_assistant_message(text: str) -> tuple[str | None, str]:
+    reasoning = _extract_reasoning_segments(text)
+    if reasoning:
+        thinking, final_text = reasoning
+        cleaned_thinking = thinking.strip() if thinking else None
+        cleaned_final = final_text.strip()
+        if not cleaned_final:
+            fallback = _strip_reasoning_markers(text).strip()
+            if cleaned_thinking and fallback.startswith(cleaned_thinking):
+                fallback = fallback[len(cleaned_thinking) :].lstrip()
+            cleaned_final = fallback
+        return cleaned_thinking, cleaned_final
+    return None, _strip_reasoning_markers(text).strip()
+
+
+class _ReasoningAccumulator:
+    def __init__(self) -> None:
+        self._raw = ""
+        self._progress = ""
+        self._thinking: str | None = None
+
+    def update(self, fragment: str) -> tuple[str, str]:
+        if fragment:
+            overlap = min(len(fragment), len(self._raw))
+            while overlap > 0 and not self._raw.endswith(fragment[:overlap]):
+                overlap -= 1
+            self._raw += fragment[overlap:]
+        reasoning = _extract_reasoning_segments(self._raw)
+        if reasoning:
+            thinking, final_text = reasoning
+            self._thinking = thinking.strip() if thinking else None
+            sanitized = final_text
+        else:
+            self._thinking = None
+            sanitized = _strip_reasoning_markers(self._raw)
+        delta = sanitized[len(self._progress) :]
+        if len(sanitized) < len(self._progress):
+            delta = sanitized
+        self._progress = sanitized
+        return delta, sanitized
+
+    def finalize(self) -> tuple[str | None, str]:
+        return _finalize_assistant_message(self._raw)
+
+    @property
+    def progress(self) -> str:
+        return self._progress
+
+    @property
+    def thinking(self) -> str | None:
+        return self._thinking
 
 
 def build_fallback_chat_prompt(messages: list[dict[str, Any]]) -> str:
