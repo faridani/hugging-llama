@@ -91,6 +91,39 @@ def _summarize_models(models: dict, limit: int = 10) -> Tuple[int, list[str]]:
     return total, sample
 
 
+def _candidate_model_keys(model: str) -> list[str]:
+    """Return the possible cache keys that might correspond to *model*.
+
+    Ollama's `/api/tags` payload sometimes surfaces both ``model`` (with tag)
+    and ``name`` (without a tag).  We normalise the identifier before lookup so
+    we can tolerate either representation living in the cache.
+    """
+
+    candidates = [model]
+
+    if ":" in model:
+        base, tag = model.split(":", 1)
+        candidates.append(base)
+        if tag == "latest" and base:
+            candidates.append(base.rstrip("/"))
+    else:
+        candidates.append(f"{model}:latest")
+
+    # Drop duplicates while preserving order
+    seen = set()
+    ordered_candidates: list[str] = []
+    for value in candidates:
+        if value and value not in seen:
+            seen.add(value)
+            ordered_candidates.append(value)
+
+    return ordered_candidates
+
+
+def _models_cache_key(user: Optional[UserModel]) -> str:
+    return f"ollama_all_models_{user.id}" if user else "ollama_all_models"
+
+
 def _payload_preview(payload: Union[str, bytes], limit: int = 200) -> str:
     """Return a short preview of the payload for diagnostics without overwhelming the logs."""
 
@@ -398,11 +431,7 @@ def merge_ollama_models_lists(model_lists):
     return list(merged_models.values())
 
 
-@cached(
-    ttl=MODELS_CACHE_TTL,
-    key=lambda _, user: f"ollama_all_models_{user.id}" if user else "ollama_all_models",
-)
-async def get_all_models(request: Request, user: UserModel = None):
+async def _load_all_models(request: Request, user: UserModel = None):
     log.info(
         "Refreshing Ollama model cache for user=%s", getattr(user, "id", None)
     )
@@ -469,11 +498,6 @@ async def get_all_models(request: Request, user: UserModel = None):
                     len(response.get("models", [])),
                     [model.get("model") for model in response.get("models", [])],
                 )
-            else:
-                log.warning(
-                    "No response received from Ollama node %s during model refresh",
-                    idx,
-                )
 
                 for model in response.get("models", []):
                     if prefix_id:
@@ -484,6 +508,11 @@ async def get_all_models(request: Request, user: UserModel = None):
 
                     if connection_type:
                         model["connection_type"] = connection_type
+            else:
+                log.warning(
+                    "No response received from Ollama node %s during model refresh",
+                    idx,
+                )
 
         models = {
             "models": merge_ollama_models_lists(
@@ -513,12 +542,28 @@ async def get_all_models(request: Request, user: UserModel = None):
     else:
         models = {"models": []}
 
-    request.app.state.OLLAMA_MODELS = {
-        model["model"]: model for model in models["models"]
-    }
+    indexed_models: dict[str, dict] = {}
+    for model in models["models"]:
+        model_id = model.get("model")
+        if model_id:
+            indexed_models[model_id] = model
+
+        name = model.get("name")
+        if name:
+            indexed_models.setdefault(name, model)
+
+    request.app.state.OLLAMA_MODELS = indexed_models
     total, sample = _summarize_models(request.app.state.OLLAMA_MODELS)
     log.info("Cached %s Ollama models: %s", total, sample)
     return models
+
+
+@cached(
+    ttl=MODELS_CACHE_TTL,
+    key=lambda _, user: _models_cache_key(user),
+)
+async def get_all_models(request: Request, user: UserModel = None):
+    return await _load_all_models(request, user=user)
 
 
 async def get_filtered_models(models, user):
@@ -1386,25 +1431,43 @@ async def get_ollama_url(
         sample,
     )
 
+    resolved_model = None
+
+    def _lookup_model(current_models: dict) -> Optional[str]:
+        for candidate in _candidate_model_keys(model):
+            if candidate in current_models:
+                return candidate
+        return None
+
     if url_idx is None:
-        if model not in models:
+        resolved_model = _lookup_model(models)
+        if resolved_model is None:
             log.warning(
                 "Model %s not present in cache (cached_total=%s). Attempting refresh.",
                 model,
                 total,
             )
-            if user is not None:
-                await get_all_models(request, user=user)
-                models = request.app.state.OLLAMA_MODELS
-                total, sample = _summarize_models(models)
-                log.debug(
-                    "Cache refresh complete for model=%s. cached_total=%s cached_sample=%s",
-                    model,
-                    total,
-                    sample,
-                )
 
-        if model not in models:
+            models_payload = await _load_all_models(request, user=user)
+            try:
+                await get_all_models.cache.set(
+                    _models_cache_key(user), models_payload, ttl=MODELS_CACHE_TTL
+                )
+            except Exception:
+                log.debug("Failed to update cached model list", exc_info=True)
+
+            models = request.app.state.OLLAMA_MODELS
+            total, sample = _summarize_models(models)
+            resolved_model = _lookup_model(models)
+            log.debug(
+                "Cache refresh complete for model=%s. cached_total=%s cached_sample=%s (resolved_model=%s)",
+                model,
+                total,
+                sample,
+                resolved_model,
+            )
+
+        if resolved_model is None:
             log.error(
                 "Model %s still missing after refresh. Available models: %s",
                 model,
@@ -1414,9 +1477,19 @@ async def get_ollama_url(
                 status_code=400,
                 detail=ERROR_MESSAGES.MODEL_NOT_FOUND(model),
             )
-        url_idx = random.choice(models[model].get("urls", []))
+
+        url_idx = random.choice(models[resolved_model].get("urls", []))
+    else:
+        resolved_model = model
+
     url = request.app.state.config.OLLAMA_BASE_URLS[url_idx]
-    log.debug("Resolved model %s to url_idx=%s (%s)", model, url_idx, url)
+    log.debug(
+        "Resolved model %s (cache_key=%s) to url_idx=%s (%s)",
+        model,
+        resolved_model,
+        url_idx,
+        url,
+    )
     return url, url_idx
 
 
