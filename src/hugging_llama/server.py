@@ -492,6 +492,21 @@ def create_app(
                         "completion_tokens": int(payload.get("eval_count", 0) or 0),
                     }
                     usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+                    delta_payload: dict[str, Any] = {}
+                    if thinking:
+                        delta_payload["thinking"] = thinking
+                    final_delta = ""
+                    if final_text:
+                        progress = accumulator.progress
+                        if final_text.startswith(progress):
+                            final_delta = final_text[len(progress) :]
+                        else:
+                            final_delta = final_text
+                    if final_delta:
+                        delta_payload["content"] = final_delta
+                    if stored_tool_calls is not None:
+                        delta_payload["tool_calls"] = stored_tool_calls
+                        delta_payload.setdefault("content", "")
                     chunk_payload = {
                         "id": chat_id,
                         "object": "chat.completion.chunk",
@@ -500,7 +515,7 @@ def create_app(
                         "choices": [
                             {
                                 "index": 0,
-                                "delta": {},
+                                "delta": delta_payload,
                                 "finish_reason": finish_reason,
                             }
                         ],
