@@ -132,6 +132,45 @@ def test_chat_endpoint_without_chat_template(
     assert res.json()["message"]["content"] == "hello"
 
 
+def test_chat_completions_non_streaming(client, dummy_manager):
+    res = client.post(
+        "/v1/chat/completions",
+        json={"model": "stub", "messages": [{"role": "user", "content": "Hello"}]},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"]["content"] == "hello world!"
+    assert body["choices"][0]["finish_reason"] == "stop"
+    usage = body["usage"]
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+
+
+def test_chat_completions_streaming(client, dummy_manager):
+    payload = {"model": "stub", "messages": [{"role": "user", "content": "Hello"}], "stream": True}
+    chunks: list[dict[str, Any]] = []
+    done = False
+    with client.stream("POST", "/v1/chat/completions", json=payload) as response:
+        for line in response.iter_lines():
+            if not line:
+                continue
+            text = line.decode("utf-8") if isinstance(line, (bytes, bytearray)) else line
+            assert text.startswith("data: ")
+            data = text[6:]
+            if data == "[DONE]":
+                done = True
+                continue
+            chunks.append(json.loads(data))
+    assert done is True
+    assert chunks
+    first = chunks[0]
+    assert first["object"] == "chat.completion.chunk"
+    assert first["choices"][0]["delta"].get("content")
+    final = chunks[-1]
+    assert final["choices"][0]["finish_reason"] == "stop"
+    assert "usage" in final
+
+
 def test_embedding_endpoint(client, dummy_manager):
     res = client.post(
         "/api/embed",
