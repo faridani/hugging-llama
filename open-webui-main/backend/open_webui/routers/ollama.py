@@ -11,7 +11,7 @@ import re
 import time
 from datetime import datetime
 
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 from urllib.parse import urlparse
 import aiohttp
 from aiocache import cached
@@ -78,8 +78,76 @@ log.setLevel(SRC_LOG_LEVELS["OLLAMA"])
 ##########################################
 
 
+def _summarize_models(models: dict, limit: int = 10) -> Tuple[int, list[str]]:
+    """Return a count and representative sample of cached model ids for logging."""
+
+    model_ids = list(models.keys()) if models else []
+    total = len(model_ids)
+    if total > limit:
+        # Avoid dumping huge lists into the logs, but surface enough context for debugging.
+        sample = model_ids[:limit] + ["..."]
+    else:
+        sample = model_ids
+    return total, sample
+
+
+def _candidate_model_keys(model: str) -> list[str]:
+    """Return the possible cache keys that might correspond to *model*.
+
+    Ollama's `/api/tags` payload sometimes surfaces both ``model`` (with tag)
+    and ``name`` (without a tag).  We normalise the identifier before lookup so
+    we can tolerate either representation living in the cache.
+    """
+
+    candidates = [model]
+
+    if ":" in model:
+        base, tag = model.split(":", 1)
+        candidates.append(base)
+        if tag == "latest" and base:
+            candidates.append(base.rstrip("/"))
+    else:
+        candidates.append(f"{model}:latest")
+
+    # Drop duplicates while preserving order
+    seen = set()
+    ordered_candidates: list[str] = []
+    for value in candidates:
+        if value and value not in seen:
+            seen.add(value)
+            ordered_candidates.append(value)
+
+    return ordered_candidates
+
+
+def _models_cache_key(user: Optional[UserModel]) -> str:
+    return f"ollama_all_models_{user.id}" if user else "ollama_all_models"
+
+
+def _payload_preview(payload: Union[str, bytes], limit: int = 200) -> str:
+    """Return a short preview of the payload for diagnostics without overwhelming the logs."""
+
+    try:
+        if isinstance(payload, bytes):
+            decoded = payload.decode("utf-8", errors="replace")
+        else:
+            decoded = payload
+    except Exception:
+        return "<unprintable payload>"
+
+    if len(decoded) > limit:
+        return f"{decoded[:limit]}... (truncated, {len(decoded)} chars)"
+    return decoded
+
+
 async def send_get_request(url, key=None, user: UserModel = None):
     timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
+    log.debug(
+        "Sending GET request to %s (key_provided=%s, user=%s)",
+        url,
+        bool(key),
+        getattr(user, "id", None),
+    )
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(
@@ -100,7 +168,14 @@ async def send_get_request(url, key=None, user: UserModel = None):
                 },
                 ssl=AIOHTTP_CLIENT_SESSION_SSL,
             ) as response:
-                return await response.json()
+                data = await response.json()
+                log.debug(
+                    "GET %s succeeded with status %s and keys %s",
+                    url,
+                    response.status,
+                    list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                )
+                return data
     except Exception as e:
         # Handle connection error here
         log.error(f"Connection error: {e}")
@@ -128,6 +203,15 @@ async def send_post_request(
 ):
 
     r = None
+    log.debug(
+        "Sending POST request to %s (stream=%s, key_provided=%s, user=%s) payload_preview=%s",
+        url,
+        stream,
+        bool(key),
+        getattr(user, "id", None),
+        _payload_preview(payload),
+    )
+
     try:
         session = aiohttp.ClientSession(
             trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
@@ -190,11 +274,18 @@ async def send_post_request(
             )
         else:
             res = await r.json()
+            log.debug(
+                "POST %s completed with status %s and response keys %s",
+                url,
+                r.status,
+                list(res.keys()) if isinstance(res, dict) else type(res).__name__,
+            )
             return res
 
     except HTTPException as e:
         raise e  # Re-raise HTTPException to be handled by FastAPI
     except Exception as e:
+        log.exception("POST request to %s failed: %s", url, e)
         detail = f"Ollama: {e}"
 
         raise HTTPException(
@@ -340,12 +431,10 @@ def merge_ollama_models_lists(model_lists):
     return list(merged_models.values())
 
 
-@cached(
-    ttl=MODELS_CACHE_TTL,
-    key=lambda _, user: f"ollama_all_models_{user.id}" if user else "ollama_all_models",
-)
-async def get_all_models(request: Request, user: UserModel = None):
-    log.info("get_all_models()")
+async def _load_all_models(request: Request, user: UserModel = None):
+    log.info(
+        "Refreshing Ollama model cache for user=%s", getattr(user, "id", None)
+    )
     if request.app.state.config.ENABLE_OLLAMA_API:
         request_tasks = []
         for idx, url in enumerate(request.app.state.config.OLLAMA_BASE_URLS):
@@ -365,6 +454,12 @@ async def get_all_models(request: Request, user: UserModel = None):
                 key = api_config.get("key", None)
 
                 if enable:
+                    log.debug(
+                        "Fetching models from Ollama node %s (%s) with key=%s",
+                        idx,
+                        url,
+                        bool(key),
+                    )
                     request_tasks.append(
                         send_get_request(f"{url}/api/tags", key, user=user)
                     )
@@ -397,6 +492,13 @@ async def get_all_models(request: Request, user: UserModel = None):
                         )
                     )
 
+                log.debug(
+                    "Node %s returned %s models: %s",
+                    idx,
+                    len(response.get("models", [])),
+                    [model.get("model") for model in response.get("models", [])],
+                )
+
                 for model in response.get("models", []):
                     if prefix_id:
                         model["model"] = f"{prefix_id}.{model['model']}"
@@ -406,6 +508,11 @@ async def get_all_models(request: Request, user: UserModel = None):
 
                     if connection_type:
                         model["connection_type"] = connection_type
+            else:
+                log.warning(
+                    "No response received from Ollama node %s during model refresh",
+                    idx,
+                )
 
         models = {
             "models": merge_ollama_models_lists(
@@ -435,10 +542,28 @@ async def get_all_models(request: Request, user: UserModel = None):
     else:
         models = {"models": []}
 
-    request.app.state.OLLAMA_MODELS = {
-        model["model"]: model for model in models["models"]
-    }
+    indexed_models: dict[str, dict] = {}
+    for model in models["models"]:
+        model_id = model.get("model")
+        if model_id:
+            indexed_models[model_id] = model
+
+        name = model.get("name")
+        if name:
+            indexed_models.setdefault(name, model)
+
+    request.app.state.OLLAMA_MODELS = indexed_models
+    total, sample = _summarize_models(request.app.state.OLLAMA_MODELS)
+    log.info("Cached %s Ollama models: %s", total, sample)
     return models
+
+
+@cached(
+    ttl=MODELS_CACHE_TTL,
+    key=lambda _, user: _models_cache_key(user),
+)
+async def get_all_models(request: Request, user: UserModel = None):
+    return await _load_all_models(request, user=user)
 
 
 async def get_filtered_models(models, user):
@@ -1215,6 +1340,12 @@ async def generate_completion(
     url_idx: Optional[int] = None,
     user=Depends(get_verified_user),
 ):
+    log.debug(
+        "generate_completion called (requested_model=%s, url_idx=%s, user=%s)",
+        form_data.model,
+        url_idx,
+        getattr(user, "id", None),
+    )
     if url_idx is None:
         await get_all_models(request, user=user)
         models = request.app.state.OLLAMA_MODELS
@@ -1284,16 +1415,81 @@ class GenerateChatCompletionForm(BaseModel):
     )
 
 
-async def get_ollama_url(request: Request, model: str, url_idx: Optional[int] = None):
+async def get_ollama_url(
+    request: Request,
+    model: str,
+    url_idx: Optional[int] = None,
+    user: Optional[UserModel] = None,
+):
+    models = request.app.state.OLLAMA_MODELS
+    total, sample = _summarize_models(models)
+    log.debug(
+        "Resolving Ollama URL for model=%s (url_idx=%s, cached_total=%s, cached_sample=%s)",
+        model,
+        url_idx,
+        total,
+        sample,
+    )
+
+    resolved_model = None
+
+    def _lookup_model(current_models: dict) -> Optional[str]:
+        for candidate in _candidate_model_keys(model):
+            if candidate in current_models:
+                return candidate
+        return None
+
     if url_idx is None:
-        models = request.app.state.OLLAMA_MODELS
-        if model not in models:
+        resolved_model = _lookup_model(models)
+        if resolved_model is None:
+            log.warning(
+                "Model %s not present in cache (cached_total=%s). Attempting refresh.",
+                model,
+                total,
+            )
+
+            models_payload = await _load_all_models(request, user=user)
+            try:
+                await get_all_models.cache.set(
+                    _models_cache_key(user), models_payload, ttl=MODELS_CACHE_TTL
+                )
+            except Exception:
+                log.debug("Failed to update cached model list", exc_info=True)
+
+            models = request.app.state.OLLAMA_MODELS
+            total, sample = _summarize_models(models)
+            resolved_model = _lookup_model(models)
+            log.debug(
+                "Cache refresh complete for model=%s. cached_total=%s cached_sample=%s (resolved_model=%s)",
+                model,
+                total,
+                sample,
+                resolved_model,
+            )
+
+        if resolved_model is None:
+            log.error(
+                "Model %s still missing after refresh. Available models: %s",
+                model,
+                sample,
+            )
             raise HTTPException(
                 status_code=400,
                 detail=ERROR_MESSAGES.MODEL_NOT_FOUND(model),
             )
-        url_idx = random.choice(models[model].get("urls", []))
+
+        url_idx = random.choice(models[resolved_model].get("urls", []))
+    else:
+        resolved_model = model
+
     url = request.app.state.config.OLLAMA_BASE_URLS[url_idx]
+    log.debug(
+        "Resolved model %s (cache_key=%s) to url_idx=%s (%s)",
+        model,
+        resolved_model,
+        url_idx,
+        url,
+    )
     return url, url_idx
 
 
@@ -1318,6 +1514,17 @@ async def generate_chat_completion(
             status_code=400,
             detail=str(e),
         )
+
+    log.debug(
+        "generate_chat_completion called (requested_model=%s, url_idx=%s, user=%s, stream=%s, message_count=%s, metadata_keys=%s, bypass_filter=%s)",
+        form_data.model,
+        url_idx,
+        getattr(user, "id", None),
+        form_data.stream,
+        len(form_data.messages),
+        list(metadata.keys()) if isinstance(metadata, dict) else None,
+        bypass_filter,
+    )
 
     if isinstance(form_data, BaseModel):
         payload = {**form_data.model_dump(exclude_none=True)}
@@ -1362,7 +1569,15 @@ async def generate_chat_completion(
     if ":" not in payload["model"]:
         payload["model"] = f"{payload['model']}:latest"
 
-    url, url_idx = await get_ollama_url(request, payload["model"], url_idx)
+    log.debug(
+        "generate_chat_completion resolved payload model to %s for user=%s",
+        payload["model"],
+        getattr(user, "id", None),
+    )
+
+    url, url_idx = await get_ollama_url(
+        request, payload["model"], url_idx, user=user
+    )
     api_config = request.app.state.config.OLLAMA_API_CONFIGS.get(
         str(url_idx),
         request.app.state.config.OLLAMA_API_CONFIGS.get(url, {}),  # Legacy support
@@ -1429,6 +1644,14 @@ async def generate_openai_completion(
             detail=str(e),
         )
 
+    log.debug(
+        "generate_openai_completion called (requested_model=%s, url_idx=%s, user=%s, metadata_keys=%s)",
+        form_data.model,
+        url_idx,
+        getattr(user, "id", None),
+        list(metadata.keys()) if isinstance(metadata, dict) else None,
+    )
+
     payload = {**form_data.model_dump(exclude_none=True, exclude=["metadata"])}
     if "metadata" in payload:
         del payload["metadata"]
@@ -1468,7 +1691,15 @@ async def generate_openai_completion(
     if ":" not in payload["model"]:
         payload["model"] = f"{payload['model']}:latest"
 
-    url, url_idx = await get_ollama_url(request, payload["model"], url_idx)
+    log.debug(
+        "generate_openai_completion resolved payload model to %s for user=%s",
+        payload["model"],
+        getattr(user, "id", None),
+    )
+
+    url, url_idx = await get_ollama_url(
+        request, payload["model"], url_idx, user=user
+    )
     api_config = request.app.state.config.OLLAMA_API_CONFIGS.get(
         str(url_idx),
         request.app.state.config.OLLAMA_API_CONFIGS.get(url, {}),  # Legacy support
@@ -1507,6 +1738,15 @@ async def generate_openai_chat_completion(
             status_code=400,
             detail=str(e),
         )
+
+    log.debug(
+        "generate_openai_chat_completion called (requested_model=%s, url_idx=%s, user=%s, metadata_keys=%s, message_count=%s)",
+        completion_form.model,
+        url_idx,
+        getattr(user, "id", None),
+        list(metadata.keys()) if isinstance(metadata, dict) else None,
+        len(completion_form.messages),
+    )
 
     payload = {**completion_form.model_dump(exclude_none=True, exclude=["metadata"])}
     if "metadata" in payload:
@@ -1551,7 +1791,15 @@ async def generate_openai_chat_completion(
     if ":" not in payload["model"]:
         payload["model"] = f"{payload['model']}:latest"
 
-    url, url_idx = await get_ollama_url(request, payload["model"], url_idx)
+    log.debug(
+        "generate_openai_chat_completion resolved payload model to %s for user=%s",
+        payload["model"],
+        getattr(user, "id", None),
+    )
+
+    url, url_idx = await get_ollama_url(
+        request, payload["model"], url_idx, user=user
+    )
     api_config = request.app.state.config.OLLAMA_API_CONFIGS.get(
         str(url_idx),
         request.app.state.config.OLLAMA_API_CONFIGS.get(url, {}),  # Legacy support
