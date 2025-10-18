@@ -1468,6 +1468,16 @@ async def get_ollama_url(
             )
 
         if resolved_model is None:
+            fallback_urls = request.app.state.config.OLLAMA_BASE_URLS
+            if len(fallback_urls) == 1:
+                log.warning(
+                    "Model %s still missing after refresh, but a single Ollama node is configured. "
+                    "Falling back to index 0 (%s).",
+                    model,
+                    fallback_urls[0],
+                )
+                return fallback_urls[0], 0
+
             log.error(
                 "Model %s still missing after refresh. Available models: %s",
                 model,
@@ -1478,7 +1488,31 @@ async def get_ollama_url(
                 detail=ERROR_MESSAGES.MODEL_NOT_FOUND(model),
             )
 
-        url_idx = random.choice(models[resolved_model].get("urls", []))
+        candidate_urls = models[resolved_model].get("urls", [])
+        if not candidate_urls:
+            fallback_urls = request.app.state.config.OLLAMA_BASE_URLS
+            if len(fallback_urls) == 1:
+                log.warning(
+                    "Model %s resolved to cache key %s but did not advertise any nodes. "
+                    "Falling back to index 0 (%s).",
+                    model,
+                    resolved_model,
+                    fallback_urls[0],
+                )
+                return fallback_urls[0], 0
+
+            log.error(
+                "Model %s resolved to cache key %s but has no URLs assigned. Available models: %s",
+                model,
+                resolved_model,
+                sample,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=ERROR_MESSAGES.MODEL_NOT_FOUND(model),
+            )
+
+        url_idx = random.choice(candidate_urls)
     else:
         resolved_model = model
 
