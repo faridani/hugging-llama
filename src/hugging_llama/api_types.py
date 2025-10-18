@@ -117,50 +117,6 @@ class ChatRequest(BaseModel):
         return values
 
 
-class ChatCompletionRequest(BaseModel):
-    """Subset of the OpenAI chat completion request schema."""
-
-    model: str
-    messages: list[ChatMessage]
-    stream: bool = False
-    temperature: float | None = Field(default=None, ge=0.0)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    max_tokens: int | None = Field(default=None, ge=1)
-    stop: str | Sequence[str] | None = None
-    presence_penalty: float | None = None
-    frequency_penalty: float | None = None
-    seed: int | None = None
-    tools: list[ToolDefinition] | None = None
-    response_format: dict[str, Any] | None = None
-    user: str | None = None
-    n: int | None = None
-    logit_bias: dict[str, float] | None = None
-    tool_choice: Any | None = None
-    stream_options: dict[str, Any] | None = None
-
-    model_config = ConfigDict(extra="allow")
-
-    def to_generate_options(self) -> GenerateOptions | None:
-        options: dict[str, Any] = {}
-        if self.temperature is not None:
-            options["temperature"] = self.temperature
-        if self.top_p is not None:
-            options["top_p"] = self.top_p
-        if self.max_tokens is not None:
-            options["max_tokens"] = self.max_tokens
-        if self.stop is not None:
-            options["stop"] = self.stop
-        if self.presence_penalty is not None:
-            options["presence_penalty"] = self.presence_penalty
-        if self.frequency_penalty is not None:
-            options["frequency_penalty"] = self.frequency_penalty
-        if self.seed is not None:
-            options["seed"] = self.seed
-        if not options:
-            return None
-        return GenerateOptions(**options)
-
-
 class EmbeddingsRequest(BaseModel):
     model: str
     input: str | Sequence[str] | None = None

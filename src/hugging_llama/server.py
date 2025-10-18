@@ -8,7 +8,6 @@ import logging
 import math
 import os
 import time
-import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from functools import partial
@@ -24,7 +23,6 @@ from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from transformers import TextIteratorStreamer
 
 from .api_types import (
-    ChatCompletionRequest,
     ChatMessage,
     ChatRequest,
     CopyRequest,
@@ -266,11 +264,13 @@ def create_app(
             media_type="application/json",
         )
 
-    async def _prepare_chat_generate_request(
+    @app.post("/api/chat")
+    async def chat_endpoint(
         request: ChatRequest,
-        manager: ModelManager,
-        ttl: float | None,
-    ) -> GenerateRequest:
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
+        ttl = parse_keep_alive(request.keep_alive)
+        format_validator = build_format_validator(request.format)
         alias_info = manager.get_alias(request.model)
         alias_options = alias_info.get("options", {}) if alias_info else {}
         if request.options is None:
@@ -313,7 +313,7 @@ def create_app(
             prompt = build_fallback_chat_prompt(messages)
         await manager.release(request.model, ttl)
 
-        return GenerateRequest(
+        generate_request = GenerateRequest(
             model=request.model,
             prompt=prompt,
             raw=True,
@@ -322,16 +322,6 @@ def create_app(
             format=request.format,
             options=request.options,
         )
-
-    @app.post("/api/chat")
-    async def chat_endpoint(
-        request: ChatRequest,
-        manager: ModelManager = Depends(get_manager),  # noqa: B008
-    ) -> Response:
-        ttl = parse_keep_alive(request.keep_alive)
-        format_validator = build_format_validator(request.format)
-        generate_request = await _prepare_chat_generate_request(request, manager, ttl)
-
         async def translate_stream() -> AsyncGenerator[bytes, None]:
             collected = ""
             stored_tool_calls: list[dict[str, Any]] | None = None
@@ -368,149 +358,6 @@ def create_app(
             final_payload = data[-1] if data else {"message": {"role": "assistant", "content": ""}, "done": True}
             return JSONResponse(final_payload)
         return StreamingResponse(translate_stream(), media_type="application/json")
-
-    @app.post("/v1/chat/completions")
-    async def chat_completions_endpoint(
-        request: ChatCompletionRequest,
-        manager: ModelManager = Depends(get_manager),  # noqa: B008
-    ) -> Response:
-        if request.n not in (None, 1):
-            raise HTTPException(status_code=400, detail="Only n=1 is supported")
-        ttl = None
-        options = request.to_generate_options()
-        response_format: str | dict[str, Any] | None = None
-        if request.response_format:
-            format_type = request.response_format.get("type")
-            if format_type == "json_object":
-                response_format = "json"
-            elif format_type == "json_schema":
-                schema = request.response_format.get("json_schema", {}).get("schema")
-                if isinstance(schema, dict):
-                    response_format = schema
-        chat_request = ChatRequest(
-            model=request.model,
-            messages=request.messages,
-            tools=request.tools,
-            stream=request.stream,
-            keep_alive=None,
-            format=response_format,
-            options=options,
-        )
-        format_validator = build_format_validator(chat_request.format)
-        generate_request = await _prepare_chat_generate_request(chat_request, manager, ttl)
-        chat_id = f"chatcmpl-{uuid.uuid4().hex}"
-        created = int(time.time())
-
-        async def collect_response() -> dict[str, Any]:
-            accumulated = ""
-            stored_tool_calls: list[dict[str, Any]] | None = None
-            final_payload: dict[str, Any] | None = None
-            async for chunk in _stream_generate(generate_request, manager, ttl, format_validator):
-                payload = json.loads(chunk.decode("utf-8"))
-                done = bool(payload.get("done"))
-                text = payload.get("response", "")
-                if done:
-                    final_payload = payload
-                    full_text = text or accumulated
-                    if stored_tool_calls is None:
-                        stored_tool_calls = detect_tool_calls(full_text)
-                    accumulated = full_text
-                else:
-                    if text:
-                        accumulated += text
-                    if stored_tool_calls is None:
-                        stored_tool_calls = detect_tool_calls(accumulated)
-            if final_payload is None:
-                final_payload = {}
-            usage = {
-                "prompt_tokens": int(final_payload.get("prompt_eval_count", 0) or 0),
-                "completion_tokens": int(final_payload.get("eval_count", 0) or 0),
-            }
-            usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
-            message: dict[str, Any] = {"role": "assistant", "content": accumulated if stored_tool_calls is None else ""}
-            if stored_tool_calls is not None:
-                message["tool_calls"] = stored_tool_calls
-            finish_reason = "tool_calls" if stored_tool_calls is not None else "stop"
-            return {
-                "id": chat_id,
-                "object": "chat.completion",
-                "created": created,
-                "model": request.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": message,
-                        "finish_reason": finish_reason,
-                    }
-                ],
-                "usage": usage,
-            }
-
-        async def stream_response() -> AsyncGenerator[bytes, None]:
-            accumulated = ""
-            stored_tool_calls: list[dict[str, Any]] | None = None
-            async for chunk in _stream_generate(generate_request, manager, ttl, format_validator):
-                payload = json.loads(chunk.decode("utf-8"))
-                done = bool(payload.get("done"))
-                text = payload.get("response", "")
-                if not done and text:
-                    accumulated += text
-                if not done and stored_tool_calls is None:
-                    stored_tool_calls = detect_tool_calls(accumulated)
-                if done:
-                    full_text = text or accumulated
-                    if stored_tool_calls is None:
-                        stored_tool_calls = detect_tool_calls(full_text)
-                    finish_reason = "tool_calls" if stored_tool_calls is not None else "stop"
-                    usage = {
-                        "prompt_tokens": int(payload.get("prompt_eval_count", 0) or 0),
-                        "completion_tokens": int(payload.get("eval_count", 0) or 0),
-                    }
-                    usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
-                    chunk_payload = {
-                        "id": chat_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": request.model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {},
-                                "finish_reason": finish_reason,
-                            }
-                        ],
-                        "usage": usage,
-                    }
-                    yield ("data: " + json.dumps(chunk_payload) + "\n\n").encode("utf-8")
-                    yield b"data: [DONE]\n\n"
-                    continue
-                delta: dict[str, Any] = {}
-                if stored_tool_calls is not None:
-                    delta["tool_calls"] = stored_tool_calls
-                    delta.setdefault("content", "")
-                elif text:
-                    delta["content"] = text
-                if not delta:
-                    continue
-                chunk_payload = {
-                    "id": chat_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": request.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": delta,
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                yield ("data: " + json.dumps(chunk_payload) + "\n\n").encode("utf-8")
-
-        if not request.stream:
-            body = await collect_response()
-            return JSONResponse(body)
-        return StreamingResponse(stream_response(), media_type="text/event-stream")
 
     @app.get("/api/tags")
     async def list_tags() -> dict[str, Any]:
