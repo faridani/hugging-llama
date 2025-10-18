@@ -78,6 +78,7 @@ class ChatMessage(BaseModel):
     content: Any
     name: str | None = None
     tool_call_id: str | None = None
+    thinking: Any | None = None
 
 
 class ToolDefinition(BaseModel):
