@@ -104,3 +104,36 @@ def test_pull_request_alias_from_bytes_payload():
     body = json.dumps({"name": "alias"}).encode()
     request = PullRequest.model_validate_json(body)
     assert request.model == "alias"
+
+
+def test_list_tags_includes_latest_suffix(client, dummy_manager, tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    config_path = repo_dir / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        dummy_manager,
+        "iter_local_models",
+        lambda: iter([("openai/gpt-oss-20b", repo_dir, config_path)]),
+    )
+
+    dummy_manager.create_alias(
+        "alias",
+        "openai/gpt-oss-20b",
+        template=None,
+        system=None,
+        parameters={},
+        modelfile=None,
+        license_info=None,
+        messages=None,
+        metadata=None,
+    )
+
+    response = client.get("/api/tags")
+    assert response.status_code == 200
+    payload = response.json()
+    model_map = {entry["name"]: entry for entry in payload["models"]}
+
+    assert model_map["openai/gpt-oss-20b"]["model"] == "openai/gpt-oss-20b:latest"
+    assert model_map["alias"]["model"] == "alias:latest"

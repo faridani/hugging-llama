@@ -346,10 +346,11 @@ def create_app(
                 size = sum(p.stat().st_size for p in repo_dir.rglob("*") if p.is_file())
             except OSError:
                 size = 0
+            model_identifier = f"{model_name}:latest"
             models.append(
                 {
                     "name": model_name,
-                    "model": model_name,
+                    "model": model_identifier,
                     "modified_at": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z",
                     "size": size,
                     "digest": str(stat.st_mtime_ns),
@@ -364,14 +365,19 @@ def create_app(
         for alias in manager.list_alias_records():
             if alias["name"] in existing:
                 continue
+            alias_name = alias["name"]
+            alias_details = dict(alias.get("details", {}))
+            base_model = alias.get("model", alias_name)
+            if base_model and "base_model" not in alias_details:
+                alias_details["base_model"] = base_model
             models.append(
                 {
-                    "name": alias["name"],
-                    "model": alias.get("model", alias["name"]),
+                    "name": alias_name,
+                    "model": f"{alias_name}:latest",
                     "modified_at": alias.get("modified_at"),
                     "size": alias.get("size", 0),
                     "digest": alias.get("digest", ""),
-                    "details": alias.get("details", {}),
+                    "details": alias_details,
                 }
             )
         return {"models": models}
