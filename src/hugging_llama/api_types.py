@@ -52,11 +52,24 @@ class GenerateRequest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _coerce_options(cls, values: dict[str, Any]) -> dict[str, Any]:
-        options = values.get("options")
-        if isinstance(options, dict):
-            values = dict(values)
-            values["options"] = GenerateOptions(**options)
+    def _coerce_options(cls, values: Any) -> Any:
+        if isinstance(values, (bytes, bytearray)):
+            try:
+                values = json.loads(values)
+            except json.JSONDecodeError:
+                return values
+        elif isinstance(values, str):
+            try:
+                values = json.loads(values)
+            except json.JSONDecodeError:
+                return values
+
+        if isinstance(values, Mapping):
+            options = values.get("options")
+            if isinstance(options, Mapping):
+                values = dict(values)
+                values["options"] = GenerateOptions(**options)
+
         return values
 
 
@@ -83,11 +96,24 @@ class ChatRequest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _coerce_options(cls, values: dict[str, Any]) -> dict[str, Any]:
-        options = values.get("options")
-        if isinstance(options, dict):
-            values = dict(values)
-            values["options"] = GenerateOptions(**options)
+    def _coerce_options(cls, values: Any) -> Any:
+        if isinstance(values, (bytes, bytearray)):
+            try:
+                values = json.loads(values)
+            except json.JSONDecodeError:
+                return values
+        elif isinstance(values, str):
+            try:
+                values = json.loads(values)
+            except json.JSONDecodeError:
+                return values
+
+        if isinstance(values, Mapping):
+            options = values.get("options")
+            if isinstance(options, Mapping):
+                values = dict(values)
+                values["options"] = GenerateOptions(**options)
+
         return values
 
 
