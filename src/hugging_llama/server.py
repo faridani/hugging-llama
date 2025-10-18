@@ -80,6 +80,31 @@ def create_app(
     )
 
     @app.middleware("http")
+    async def logging_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        start = time.perf_counter()
+        status_code: int | str | None = None
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        except Exception:  # pragma: no cover - logging instrumentation
+            status_code = status_code or "error"
+            LOGGER.exception("Unhandled error processing %s %s", request.method, request.url.path)
+            raise
+        finally:
+            duration = time.perf_counter() - start
+            LOGGER.info(
+                "%s %s -> %s (%.3fs)",
+                request.method,
+                request.url.path,
+                status_code if status_code is not None else "error",
+                duration,
+            )
+
+    @app.middleware("http")
     async def metrics_middleware(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
