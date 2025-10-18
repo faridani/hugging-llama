@@ -8,7 +8,8 @@ import logging
 import math
 import os
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+import uuid
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from functools import partial
 from importlib.metadata import PackageNotFoundError, version
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
@@ -44,6 +45,8 @@ from .stop_sequences import StopSequenceMatcher
 from .utils import TimingInfo, detect_platform, parse_keep_alive
 
 LOGGER = logging.getLogger(__name__)
+
+SYSTEM_FINGERPRINT = "fp_hugging_llama"
 
 REQUEST_LATENCY = Histogram(
     "ollama_request_latency_seconds",
@@ -245,31 +248,11 @@ def create_app(
         finally:
             await manager.release(request.model, ttl)
 
-    @app.post("/api/generate")
-    async def generate_endpoint(
-        request: GenerateRequest,
-        manager: ModelManager = Depends(get_manager),  # noqa: B008
-    ) -> Response:
-        ttl = parse_keep_alive(request.keep_alive)
-        format_validator = build_format_validator(request.format)
-        if not request.stream:
-            chunks = []
-            async for payload in _stream_generate(request, manager, ttl, format_validator):
-                data = json.loads(payload.decode("utf-8"))
-                chunks.append(data)
-            final = chunks[-1] if chunks else {"response": "", "done": True}
-            return JSONResponse(final)
-        return StreamingResponse(
-            _stream_generate(request, manager, ttl, format_validator),
-            media_type="application/json",
-        )
-
-    @app.post("/api/chat")
-    async def chat_endpoint(
+    async def _prepare_chat_generation(
         request: ChatRequest,
-        manager: ModelManager = Depends(get_manager),  # noqa: B008
-    ) -> Response:
-        ttl = parse_keep_alive(request.keep_alive)
+        manager: ModelManager,
+        ttl: float | None,
+    ) -> tuple[GenerateRequest, Callable[[str], None] | None]:
         format_validator = build_format_validator(request.format)
         alias_info = manager.get_alias(request.model)
         alias_options = alias_info.get("options", {}) if alias_info else {}
@@ -283,7 +266,9 @@ def create_app(
         if alias_info and alias_info.get("system"):
             has_system = any(msg.role == "system" for msg in message_objects)
             if not has_system:
-                message_objects = [ChatMessage(role="system", content=alias_info["system"])] + message_objects
+                message_objects = [
+                    ChatMessage(role="system", content=cast(str, alias_info["system"]))
+                ] + message_objects
         model = await manager.ensure_model(request.model, request_options, ttl)
         tokenizer = model.tokenizer
         messages = []
@@ -312,7 +297,6 @@ def create_app(
             )
             prompt = build_fallback_chat_prompt(messages)
         await manager.release(request.model, ttl)
-
         generate_request = GenerateRequest(
             model=request.model,
             prompt=prompt,
@@ -322,6 +306,34 @@ def create_app(
             format=request.format,
             options=request.options,
         )
+        return generate_request, format_validator
+
+    @app.post("/api/generate")
+    async def generate_endpoint(
+        request: GenerateRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
+        ttl = parse_keep_alive(request.keep_alive)
+        format_validator = build_format_validator(request.format)
+        if not request.stream:
+            chunks = []
+            async for payload in _stream_generate(request, manager, ttl, format_validator):
+                data = json.loads(payload.decode("utf-8"))
+                chunks.append(data)
+            final = chunks[-1] if chunks else {"response": "", "done": True}
+            return JSONResponse(final)
+        return StreamingResponse(
+            _stream_generate(request, manager, ttl, format_validator),
+            media_type="application/json",
+        )
+
+    @app.post("/api/chat")
+    async def chat_endpoint(
+        request: ChatRequest,
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
+        ttl = parse_keep_alive(request.keep_alive)
+        generate_request, format_validator = await _prepare_chat_generation(request, manager, ttl)
         async def translate_stream() -> AsyncGenerator[bytes, None]:
             collected = ""
             stored_tool_calls: list[dict[str, Any]] | None = None
@@ -358,6 +370,92 @@ def create_app(
             final_payload = data[-1] if data else {"message": {"role": "assistant", "content": ""}, "done": True}
             return JSONResponse(final_payload)
         return StreamingResponse(translate_stream(), media_type="application/json")
+
+    @app.post("/v1/chat/completions")
+    async def openai_chat_completions(
+        payload: dict[str, Any] = Body(...),
+        manager: ModelManager = Depends(get_manager),  # noqa: B008
+    ) -> Response:
+        model_name = payload.get("model")
+        if not isinstance(model_name, str) or not model_name:
+            raise HTTPException(status_code=400, detail="Field 'model' must be a non-empty string")
+        messages_payload = payload.get("messages")
+        if not isinstance(messages_payload, list) or not messages_payload:
+            raise HTTPException(status_code=400, detail="Field 'messages' must be a non-empty list")
+        stream = bool(payload.get("stream", False))
+        requested_choices = payload.get("n")
+        if requested_choices not in (None, 1):
+            raise HTTPException(status_code=400, detail="Only n=1 is currently supported")
+        options_payload: dict[str, Any] = {}
+        for field in (
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "stop",
+            "frequency_penalty",
+            "presence_penalty",
+            "seed",
+        ):
+            if field in payload and payload[field] is not None:
+                options_payload[field] = payload[field]
+        chat_request_payload: dict[str, Any] = {
+            "model": model_name,
+            "messages": [],
+            "tools": payload.get("tools"),
+            "stream": stream,
+            "format": _normalise_response_format(payload.get("response_format")),
+        }
+        if options_payload:
+            chat_request_payload["options"] = options_payload
+        for item in messages_payload:
+            if not isinstance(item, Mapping):
+                raise HTTPException(status_code=400, detail="Each message must be an object")
+            content = item.get("content")
+            if content is None:
+                content = ""
+            entry: dict[str, Any] = {
+                "role": item.get("role"),
+                "content": content,
+            }
+            if "name" in item:
+                entry["name"] = item["name"]
+            if "tool_call_id" in item:
+                entry["tool_call_id"] = item["tool_call_id"]
+            chat_request_payload["messages"].append(entry)
+        try:
+            chat_request = ChatRequest.model_validate(chat_request_payload)
+        except Exception as exc:  # pragma: no cover - delegated validation error formatting
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        ttl = parse_keep_alive(chat_request.keep_alive)
+        generate_request, format_validator = await _prepare_chat_generation(chat_request, manager, ttl)
+        completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+        created = int(time.time())
+        stream_options = payload.get("stream_options")
+        include_usage = False
+        if isinstance(stream_options, Mapping):
+            include_usage = bool(stream_options.get("include_usage"))
+        accumulator = OpenAIChatAccumulator(
+            chat_request.model,
+            completion_id,
+            created,
+            include_usage if stream else False,
+        )
+
+        if stream:
+            async def event_stream() -> AsyncGenerator[bytes, None]:
+                async for chunk in _stream_generate(generate_request, manager, ttl, format_validator):
+                    payload_chunk = json.loads(chunk.decode("utf-8"))
+                    for event in accumulator.process(payload_chunk):
+                        yield ("data: " + json.dumps(event) + "\n\n").encode("utf-8")
+                yield b"data: [DONE]\n\n"
+
+            return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+        async for chunk in _stream_generate(generate_request, manager, ttl, format_validator):
+            payload_chunk = json.loads(chunk.decode("utf-8"))
+            accumulator.process(payload_chunk)
+        final_response = accumulator.build_final_response()
+        return JSONResponse(final_response)
 
     @app.get("/api/tags")
     async def list_tags() -> dict[str, Any]:
@@ -770,6 +868,21 @@ def format_generate_chunk(request: GenerateRequest, text: str, done: bool, timin
     return payload
 
 
+def _normalise_response_format(format_option: Any | None) -> Any | None:
+    if format_option is None:
+        return None
+    if isinstance(format_option, dict):
+        format_type = format_option.get("type")
+        if format_type == "json_object":
+            return "json"
+        if format_type == "json_schema":
+            schema = format_option.get("json_schema")
+            if isinstance(schema, dict):
+                return schema.get("schema", schema)
+        return format_option
+    return format_option
+
+
 def build_format_validator(format_option: Any | None) -> Callable[[str], None] | None:
     if format_option is None:
         return None
@@ -795,6 +908,160 @@ def build_format_validator(format_option: Any | None) -> Callable[[str], None] |
 
         return validator
     raise HTTPException(status_code=400, detail="Unsupported format option")
+
+
+def _normalise_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalised: list[dict[str, Any]] = []
+    for index, entry in enumerate(tool_calls):
+        if not isinstance(entry, Mapping):
+            entry = cast(dict[str, Any], dict(entry))
+        else:
+            entry = dict(entry)
+        entry.setdefault("type", "function")
+        if not isinstance(entry.get("id"), str) or not entry.get("id"):
+            entry["id"] = entry.get("id") or f"call_{index}"
+        function_data = entry.get("function")
+        if isinstance(function_data, Mapping):
+            entry["function"] = dict(function_data)
+        elif function_data is None:
+            entry["function"] = {}
+        normalised.append(entry)
+    return normalised
+
+
+class OpenAIChatAccumulator:
+    def __init__(
+        self,
+        model: str,
+        completion_id: str,
+        created: int,
+        include_usage: bool,
+    ) -> None:
+        self.model = model
+        self.completion_id = completion_id
+        self.created = created
+        self.include_usage = include_usage
+        self._collected_text = ""
+        self._assistant_content = ""
+        self._tool_calls: list[dict[str, Any]] | None = None
+        self._tool_calls_emitted = False
+        self._first_delta_sent = False
+        self.usage: dict[str, int] | None = None
+
+    def process(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        text = payload.get("response", "") or ""
+        is_done = bool(payload.get("done"))
+        chunk_text = text if not is_done else ""
+        if chunk_text:
+            self._collected_text += chunk_text
+        elif not self._collected_text and text:
+            self._collected_text = text
+        emit_text = ""
+        tool_calls_detected = False
+        if self._tool_calls is None:
+            detected = detect_tool_calls(self._collected_text)
+            if detected is not None:
+                self._tool_calls = _normalise_tool_calls(detected)
+                self._assistant_content = ""
+                tool_calls_detected = True
+            elif chunk_text:
+                emit_text = chunk_text
+                self._assistant_content += chunk_text
+            elif is_done and text and not self._assistant_content:
+                self._assistant_content = text
+
+        if emit_text:
+            delta: dict[str, Any] = {}
+            if not self._first_delta_sent:
+                delta["role"] = "assistant"
+                self._first_delta_sent = True
+            delta["content"] = emit_text
+            events.append(self._build_chunk(delta, None))
+
+        if tool_calls_detected and self._tool_calls is not None:
+            delta = {}
+            if not self._first_delta_sent:
+                delta["role"] = "assistant"
+                self._first_delta_sent = True
+            delta["tool_calls"] = self._tool_calls
+            events.append(self._build_chunk(delta, None))
+            self._tool_calls_emitted = True
+
+        if payload.get("done"):
+            prompt_tokens = int(payload.get("prompt_eval_count") or 0)
+            completion_tokens = int(payload.get("eval_count") or 0)
+            self.usage = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            }
+            finish_reason = "tool_calls" if self._tool_calls else "stop"
+            delta = {}
+            if not self._first_delta_sent:
+                delta["role"] = "assistant"
+                self._first_delta_sent = True
+            if self._tool_calls is not None and not self._tool_calls_emitted:
+                delta["tool_calls"] = self._tool_calls
+                self._tool_calls_emitted = True
+            events.append(self._build_chunk(delta, finish_reason, include_usage=self.include_usage))
+        return events
+
+    def _build_chunk(
+        self,
+        delta: dict[str, Any],
+        finish_reason: str | None,
+        *,
+        include_usage: bool = False,
+    ) -> dict[str, Any]:
+        chunk = {
+            "id": self.completion_id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
+        if include_usage and finish_reason is not None and self.usage is not None:
+            chunk["usage"] = self.usage
+        return chunk
+
+    def build_final_response(self) -> dict[str, Any]:
+        if self.usage is None:
+            self.usage = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            }
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": self._assistant_content,
+        }
+        if self._tool_calls is not None:
+            message["content"] = ""
+            message["tool_calls"] = self._tool_calls
+        finish_reason = "tool_calls" if self._tool_calls else "stop"
+        return {
+            "id": self.completion_id,
+            "object": "chat.completion",
+            "created": self.created,
+            "model": self.model,
+            "system_fingerprint": SYSTEM_FINGERPRINT,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": finish_reason,
+                    "logprobs": None,
+                }
+            ],
+            "usage": self.usage,
+        }
 
 
 def detect_tool_calls(text: str) -> list[dict[str, Any]] | None:
