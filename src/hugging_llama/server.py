@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import torch
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
@@ -373,7 +373,7 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def openai_chat_completions(
-        payload: dict[str, Any] = Body(...),
+        payload: Annotated[dict[str, Any], Body(...)],
         manager: ModelManager = Depends(get_manager),  # noqa: B008
     ) -> Response:
         model_name = payload.get("model")
