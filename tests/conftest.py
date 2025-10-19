@@ -289,16 +289,13 @@ class DummyManager:
 
 
 def fake_run_generation(
-    manager: Any,
     request_options: Any,
     input_ids: Any,
     attention_mask: Any,
-    tokenizer: Any,
     model: Any,
-    prompt_text: str,
     streamer: Any,
 ) -> dict[str, Any]:
-    del manager, request_options, input_ids, attention_mask, tokenizer, prompt_text
+    del request_options, input_ids, attention_mask
     for chunk in model.outputs:
         streamer.feed(chunk)
     streamer.end()
