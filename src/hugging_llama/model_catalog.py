@@ -349,9 +349,9 @@ def _infer_precision(metadata: dict[str, Any]) -> str:
 
     config = metadata.get("config")
     if isinstance(config, dict):
-        torch_dtype = config.get("torch_dtype")
-        if isinstance(torch_dtype, str):
-            normalized = torch_dtype.replace("torch.", "").upper()
+        dtype = config.get("dtype") or config.get("torch_dtype")
+        if isinstance(dtype, str):
+            normalized = dtype.replace("torch.", "").upper()
             if normalized == "BFLOAT16":
                 return "BF16"
             if normalized == "FLOAT32":

@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import shutil
+from importlib import metadata
 from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -90,6 +91,43 @@ def _resolve_local_model_dir(repo_dir: Path) -> Path | None:
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[0][1]
+
+
+def _parse_version_prefix(value: str) -> list[int]:
+    numbers: list[int] = []
+    for part in value.replace("-", ".").split("."):
+        if not part:
+            continue
+        digits = ""
+        for char in part:
+            if char.isdigit():
+                digits += char
+            else:
+                break
+        if not digits:
+            break
+        numbers.append(int(digits))
+    return numbers
+
+
+def _is_mxfp4_supported(device: str) -> bool:
+    if device != "cuda":
+        return False
+    try:
+        version_str = metadata.version("triton")
+    except metadata.PackageNotFoundError:
+        return False
+    parsed = _parse_version_prefix(version_str)
+    requirement = [3, 4, 0]
+    length = max(len(parsed), len(requirement))
+    parsed.extend(0 for _ in range(length - len(parsed)))
+    requirement.extend(0 for _ in range(length - len(requirement)))
+    return tuple(parsed) >= tuple(requirement)
+
+
+def _is_cuda_oom_error(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return "out of memory" in message or "cuda error" in message
 
 _SNAPSHOT_DOWNLOAD_SUPPORTS_TRUST_REMOTE_CODE = (
     "trust_remote_code" in inspect.signature(snapshot_download).parameters
@@ -447,20 +485,45 @@ class ModelManager:
         load_kwargs: dict[str, Any] = {}
         device = detect_default_device()
         dtype = choose_dtype(device)
+        quantization_enabled = False
         if options.get("load_in_8bit"):
             load_kwargs["load_in_8bit"] = True
+            quantization_enabled = True
         elif options.get("load_in_4bit"):
-            load_kwargs["load_in_4bit"] = True
-        else:
-            load_kwargs["torch_dtype"] = dtype
-        load_kwargs["device_map"] = "auto"
+            if _is_mxfp4_supported(device):
+                load_kwargs["load_in_4bit"] = True
+                quantization_enabled = True
+            else:
+                LOGGER.warning(
+                    "Requested 4-bit loading but Triton >= 3.4.0 is unavailable; falling back to %s precision",
+                    dtype,
+                )
+        if not quantization_enabled:
+            load_kwargs["dtype"] = dtype
+
+        explicit_device_map = options.get("device_map")
+        prefer_full_device = False
+        if explicit_device_map is not None:
+            load_kwargs["device_map"] = explicit_device_map
+        elif device in {"cuda", "mps"}:
+            load_kwargs["device_map"] = {"": device}
+            prefer_full_device = device == "cuda"
         if options.get("trust_remote_code"):
             load_kwargs["trust_remote_code"] = True
         repo_dir = self.cache_dir / name.replace("/", "__")
         repo_dir.mkdir(parents=True, exist_ok=True)
         local_dir = _resolve_local_model_dir(repo_dir)
         load_target = local_dir or (repo_dir if any(repo_dir.iterdir()) else name)
-        model = AutoModelForCausalLM.from_pretrained(load_target, **load_kwargs)
+        try:
+            model = AutoModelForCausalLM.from_pretrained(load_target, **load_kwargs)
+        except RuntimeError as exc:
+            if prefer_full_device and _is_cuda_oom_error(exc):
+                LOGGER.warning("Falling back to device_map='auto' due to limited GPU memory: %s", exc)
+                fallback_kwargs = dict(load_kwargs)
+                fallback_kwargs["device_map"] = "auto"
+                model = AutoModelForCausalLM.from_pretrained(load_target, **fallback_kwargs)
+            else:
+                raise
         tokenizer = AutoTokenizer.from_pretrained(load_target, use_fast=True)
         tokenizer.padding_side = "left"
         tokenizer.truncation_side = "left"
@@ -631,6 +694,13 @@ def run_generation(
     }
     if request_options.max_tokens is not None:
         generation_kwargs["max_new_tokens"] = request_options.max_tokens
+    else:
+        context_window = getattr(model.config, "max_position_embeddings", None)
+        if isinstance(context_window, int) and context_window > prompt_tokens:
+            default_max_tokens = context_window - prompt_tokens
+        else:
+            default_max_tokens = 1024
+        generation_kwargs["max_new_tokens"] = max(1, default_max_tokens)
     if request_options.top_k is not None:
         generation_kwargs["top_k"] = request_options.top_k
     if request_options.top_p is not None:
