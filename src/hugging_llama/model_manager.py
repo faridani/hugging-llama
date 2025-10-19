@@ -677,16 +677,13 @@ class ModelManager:
 
 
 def run_generation(
-    manager: ModelManager,
     request_options: GenerateOptions,
     input_ids: torch.LongTensor,
     attention_mask: torch.LongTensor,
-    tokenizer,
     model,
-    prompt_text: str,
     streamer: TextIteratorStreamer,
 ) -> dict[str, Any]:
-    prompt_tokens = len(tokenizer(prompt_text, return_tensors="pt")["input_ids"][0])
+    prompt_tokens = int(attention_mask.sum().item())
     generation_kwargs: dict[str, Any] = {
         "input_ids": input_ids.to(model.device),
         "attention_mask": attention_mask.to(model.device),
@@ -720,5 +717,6 @@ def run_generation(
         torch.manual_seed(request_options.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(request_options.seed)
-    model.generate(**generation_kwargs)
+    with torch.inference_mode():
+        model.generate(**generation_kwargs)
     return {"prompt_tokens": prompt_tokens}

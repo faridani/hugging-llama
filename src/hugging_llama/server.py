@@ -187,13 +187,10 @@ def create_app(
             None,
             partial(
                 run_generation,
-                manager,
                 request_options,
                 input_ids,
                 attention_mask,
-                tokenizer,
                 model.model,
-                prompt,
                 streamer,
             ),
         )
