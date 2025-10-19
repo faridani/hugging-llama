@@ -699,7 +699,7 @@ def run_generation(
         if isinstance(context_window, int) and context_window > prompt_tokens:
             default_max_tokens = context_window - prompt_tokens
         else:
-            default_max_tokens = 1024
+            default_max_tokens = 4096
         generation_kwargs["max_new_tokens"] = max(1, default_max_tokens)
     if request_options.top_k is not None:
         generation_kwargs["top_k"] = request_options.top_k
