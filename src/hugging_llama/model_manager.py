@@ -8,11 +8,11 @@ import json
 import logging
 import math
 import shutil
-from importlib import metadata
 from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 from typing import Any, cast
 
